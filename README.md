@@ -1,5 +1,7 @@
 # OpenRGB 1.1 ZOTAC RTX 5070 Ti Plugin (ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC)
 
+Download the latest build file for the GPU. Working file. Static color works , breathing works, spectrum cycling works.
+
 ## Target Hardware Profile
 - PCI Vendor / Device: 0x10DE:0x2C05 (NVIDIA GeForce RTX 5070 Ti, GB203)
 - PCI Subsystem: 0x19DA:0x2765 (ZOTAC)
