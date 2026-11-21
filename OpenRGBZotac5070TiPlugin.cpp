@@ -596,7 +596,7 @@ void OpenRGBZotac5070TiPlugin::Load(OpenRGBPluginAPIInterface* plugin_api_ptr)
         sync_timer = new QTimer(this);
         sync_timer->setTimerType(Qt::PreciseTimer);
         QObject::connect(sync_timer, &QTimer::timeout, this, &OpenRGBZotac5070TiPlugin::OnSyncTimerTick);
-        sync_timer->start(10);
+        sync_timer->start(15);
     }
 }
 
@@ -850,13 +850,19 @@ void OpenRGBZotac5070TiPlugin::RegisterVirtualGPUDevice()
 
 bool OpenRGBZotac5070TiPlugin::CanWriteHardwareNow(uint64_t now_ms) const
 {
+    if(now_ms < hw_backoff_until_ms)
+    {
+        return false;
+    }
     if(last_write_start_ms == 0)
     {
         return true;
     }
-    const uint64_t min_interval_ms = (active_proto == ZOTAC_PROTO_4A) ? 40ULL : 20ULL;
-    const uint64_t idle_gap_ms     = (active_proto == ZOTAC_PROTO_4A) ? 8ULL : 4ULL;
-    return ((now_ms - last_write_start_ms) >= min_interval_ms) && ((now_ms - last_write_end_ms) >= idle_gap_ms);
+    const uint64_t min_interval_ms = (active_proto == ZOTAC_PROTO_4A) ? 90ULL : 25ULL;
+    const uint64_t idle_gap_ms     = (active_proto == ZOTAC_PROTO_4A) ? 45ULL : 8ULL;
+    const uint64_t write_dur_ms    = (last_write_end_ms >= last_write_start_ms) ? (last_write_end_ms - last_write_start_ms) : 0ULL;
+    const uint64_t required_idle   = std::max(idle_gap_ms, write_dur_ms);
+    return ((now_ms - last_write_start_ms) >= min_interval_ms) && ((now_ms - last_write_end_ms) >= required_idle);
 }
 
 bool OpenRGBZotac5070TiPlugin::WriteColorNVAPI(unsigned char r, unsigned char g, unsigned char b)
@@ -1022,12 +1028,23 @@ bool OpenRGBZotac5070TiPlugin::WriteModeNVAPI(
     );
     if(rc == 0)
     {
-        last_write_end_ms = GetNowMs();
-        pending_hw_flush  = false;
-        last_nvapi_status = 0;
+        last_write_end_ms   = GetNowMs();
+        hw_backoff_until_ms = 0;
+        pending_hw_flush    = false;
+        last_nvapi_status   = 0;
         last_nvapi_error.clear();
-        has_applied_color = true;
+        has_applied_color   = true;
         return true;
+    }
+
+    if(!force_immediate && detected)
+    {
+        const uint64_t fail_ms = GetNowMs();
+        last_write_end_ms      = fail_ms;
+        hw_backoff_until_ms    = fail_ms + 1000ULL;
+        last_nvapi_status      = rc;
+        last_nvapi_error       = nv.FormatError(rc);
+        return false;
     }
 
     int first_err = rc;
@@ -1411,8 +1428,10 @@ void OpenRGBZotac5070TiPlugin::OnSyncTimerTick()
     if(mirror_active && !virtual_mode_locked.load())
     {
         uint64_t last_virt = last_virtual_update_ms.load();
-        if(last_virt == 0 || (now_ms - last_virt) > 1500ULL)
+        if((last_virt == 0 || (now_ms - last_virt) > 1500ULL) &&
+           (last_mirror_poll_ms == 0 || (now_ms - last_mirror_poll_ms) >= 80ULL))
         {
+            last_mirror_poll_ms = now_ms;
             SyncFromOpenRGBDevices();
         }
     }
@@ -1565,11 +1584,11 @@ void OpenRGBZotac5070TiPlugin::ScanAndRegisterZotacGPU()
     }
     else
     {
-        char err_line[360] = {};
+        char err_line[512] = {};
         std::snprintf(
             err_line,
             sizeof(err_line),
-            "NVAPI write failed on 0x%02X (%s, rc=%d). %s",
+            "NVAPI write failed on 0x%02X (%s, rc=%d). %s If GPU LEDs remain frozen on one color (e.g. orange), shut down PC & turn PSU switch OFF for 20s to reset GPU MCU.",
             active_i2c_addr,
             last_nvapi_error.c_str(),
             last_nvapi_status,

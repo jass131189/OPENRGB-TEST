@@ -93,6 +93,8 @@ private:
 
     uint64_t                                              last_write_start_ms = 0;
     uint64_t                                              last_write_end_ms = 0;
+    uint64_t                                              hw_backoff_until_ms = 0;
+    uint64_t                                              last_mirror_poll_ms = 0;
     bool                                                  pending_hw_flush = false;
     unsigned char                                         pending_r = 56;
     unsigned char                                         pending_g = 189;
