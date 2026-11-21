@@ -60,8 +60,9 @@ private:
     void                RegisterVirtualGPUDevice();
     void                HandleVirtualUpdate();
     void                SubmitTargetState(int mode_id, unsigned char r, unsigned char g, unsigned char b, unsigned int speed_pct, bool is_on, bool immediate_snap);
+    void                SetCycleFlags(bool sw_cycle, bool mirror_cycle);
     bool                WriteHardwareNVAPI(int mode_id, unsigned char r, unsigned char g, unsigned char b, unsigned int speed_pct, bool is_on, uint32_t& out_write_us);
-    uint32_t            NegotiateFastestBusSpeed();
+    uint32_t            NegotiateSafeBusSpeed();
     std::string         BenchmarkBusSpeed();
     std::string         ScanNVAPIBus();
     void                SyncFromOpenRGBDevices();
@@ -75,7 +76,7 @@ private:
     QTimer*                                               sync_timer = nullptr;
     RGBControllerInterface*                               virt_ctrl = nullptr;
 
-    // Thread synchronization: target_mutex is never held during NVAPI I2C calls
+    // Thread synchronization: target_mutex protects ALL condition_variable predicates & target state
     std::mutex                                            nvapi_mutex;
     std::mutex                                            target_mutex;
     std::condition_variable                               worker_cv;
@@ -89,14 +90,14 @@ private:
     std::atomic<unsigned int>                             sw_cycle_speed_pct{50};
     std::atomic<uint64_t>                                 last_virtual_update_ms{0};
 
-    // Smooth Engine configuration (tunable live in Plugin UI & saved in OpenRGB profile)
-    std::atomic<uint32_t>                                 target_frame_ms{16};
+    // Smooth Engine v2.1 configuration (tunable live in Plugin UI & saved in OpenRGB profile)
+    std::atomic<uint32_t>                                 target_frame_ms{40};
     std::atomic<uint32_t>                                 smooth_window_ms{120};
-    std::atomic<int>                                      i2c_speed_pref{0}; // 0=Auto, 4=100kHz, 3=40kHz, 2=10kHz
+    std::atomic<int>                                      i2c_speed_pref{0}; // 0=Auto Safe, 4=100kHz, 3=40kHz, 2=10kHz
     std::atomic<bool>                                     gamma_correction{true};
     std::atomic<bool>                                     prefer_hw_native_cycle{false};
 
-    // Target state written by Qt/OpenRGB callbacks and consumed by WorkerLoop
+    // Target state written under target_mutex and consumed by WorkerLoop
     unsigned char                                         target_r = 56;
     unsigned char                                         target_g = 189;
     unsigned char                                         target_b = 248;
@@ -111,7 +112,8 @@ private:
     std::atomic<uint32_t>                                 measured_write_us{0};
     std::atomic<uint32_t>                                 measured_fps_x10{0};
     std::atomic<uint64_t>                                 frames_sent{0};
-    std::atomic<uint64_t>                                 frames_coalesced{0};
+    std::atomic<uint64_t>                                 frames_failed{0};
+    std::atomic<int>                                      worker_last_rc{0};
     uint64_t                                              last_ui_telemetry_ms = 0;
 
     bool                                                  detected = false;
@@ -126,7 +128,7 @@ private:
     uint8_t                                               active_is_ddc = 1;
     uint8_t                                               active_port_id = 1;
     uint32_t                                              active_port_set = 1;
-    uint32_t                                              active_speed_khz = 4u;
+    uint32_t                                              active_speed_khz = 2u;
     bool                                                  active_use_ex_api = false;
     bool                                                  active_reg_split = true;
     int                                                   active_proto = ZOTAC_PROTO_4A;
@@ -135,8 +137,4 @@ private:
     std::string                                           last_nvapi_error;
     std::string                                           detected_fw_version;
     std::string                                           status_line;
-
-    // Blackwell register shadow cache to skip unchanged single-byte I2C writes
-    uint8_t                                               bw_shadow[2][16] = {};
-    bool                                                  bw_shadow_valid[2] = { false, false };
 };

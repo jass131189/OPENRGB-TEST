@@ -1,7 +1,9 @@
 #include "RGBController_Zotac5070Ti.h"
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 
 Zotac5070TiController::Zotac5070TiController(i2c_smbus_interface* bus_ptr, uint8_t dev_addr)
     : bus(bus_ptr), dev(dev_addr)
@@ -51,7 +53,6 @@ void Zotac5070TiController::SetZoneColor(
         0x00, is_on, mode_4a, scaled_r, scaled_g, scaled_b, on_time, 10, 0x08
     };
 
-    // Skip redundant identical I2C writes; removed blocking 200ms sleep
     if(has_last_pkt[z_idx] && std::memcmp(last_pkt[z_idx], data_pkt, 9) == 0)
     {
         return;
@@ -60,6 +61,7 @@ void Zotac5070TiController::SetZoneColor(
     bus->i2c_smbus_write_i2c_block_data(dev, 0x5A, sizeof(data_pkt), data_pkt);
     std::memcpy(last_pkt[z_idx], data_pkt, 9);
     has_last_pkt[z_idx] = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(12));
 }
 
 RGBController_Zotac5070Ti::RGBController_Zotac5070Ti(Zotac5070TiController* controller_ptr)
