@@ -16,6 +16,8 @@
 #include <QSignalBlocker>
 
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -194,6 +196,59 @@ namespace
             (void)out_status;
             return false;
         }
+    }
+
+    uint64_t GetNowMs()
+    {
+#ifdef _WIN32
+        return GetTickCount64();
+#else
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()
+            ).count()
+        );
+#endif
+    }
+
+    void HsvToRgb(float h_deg, unsigned char& r, unsigned char& g, unsigned char& b)
+    {
+        float h = h_deg;
+        while(h >= 360.0f) h -= 360.0f;
+        while(h < 0.0f) h += 360.0f;
+
+        float sector = h / 60.0f;
+        int i = static_cast<int>(sector);
+        float f = sector - static_cast<float>(i);
+        unsigned char q = static_cast<unsigned char>((1.0f - f) * 255.0f + 0.5f);
+        unsigned char t = static_cast<unsigned char>(f * 255.0f + 0.5f);
+
+        switch(i % 6)
+        {
+            case 0: r = 255; g = t;   b = 0;   break;
+            case 1: r = q;   g = 255; b = 0;   break;
+            case 2: r = 0;   g = 255; b = t;   break;
+            case 3: r = 0;   g = q;   b = 255; break;
+            case 4: r = t;   g = 0;   b = 255; break;
+            default: r = 255; g = 0;  b = q;   break;
+        }
+    }
+
+    bool IsCycleModeName(const std::string& raw_name)
+    {
+        std::string lower;
+        lower.reserve(raw_name.size());
+        for(unsigned char ch : raw_name)
+        {
+            lower.push_back(static_cast<char>(std::tolower(ch)));
+        }
+        return (lower.find("cycle") != std::string::npos) ||
+               (lower.find("rainbow") != std::string::npos) ||
+               (lower.find("spectrum") != std::string::npos) ||
+               (lower.find("wave") != std::string::npos) ||
+               (lower.find("prism") != std::string::npos) ||
+               (lower.find("fade") != std::string::npos) ||
+               (lower.find("shift") != std::string::npos);
     }
 
     bool TryExtractControllerColor(RGBControllerInterface* ctrl, unsigned char& r, unsigned char& g, unsigned char& b)
@@ -561,7 +616,7 @@ void OpenRGBZotac5070TiPlugin::Load(OpenRGBPluginAPIInterface* plugin_api_ptr)
     {
         sync_timer = new QTimer(this);
         QObject::connect(sync_timer, &QTimer::timeout, this, &OpenRGBZotac5070TiPlugin::OnSyncTimerTick);
-        sync_timer->start(80);
+        sync_timer->start(50);
     }
 }
 
@@ -592,10 +647,14 @@ void OpenRGBZotac5070TiPlugin::HandleVirtualUpdate()
         return;
     }
 
+    last_virtual_update_ms.store(GetNowMs());
+
     int m_idx = virt_ctrl->GetActiveMode();
     int mode_id = ZOTAC_5070TI_MODE_DIRECT;
     unsigned int speed_pct = 50;
     bool is_on = true;
+    bool use_sw_cycle = false;
+    bool lock_mode = false;
     unsigned char r = last_r;
     unsigned char g = last_g;
     unsigned char b = last_b;
@@ -604,18 +663,44 @@ void OpenRGBZotac5070TiPlugin::HandleVirtualUpdate()
     {
         unsigned int m = static_cast<unsigned int>(m_idx);
         std::string mname = virt_ctrl->GetModeName(m);
+        unsigned int smax = virt_ctrl->GetModeSpeedMax(m);
+        if(smax > 0)
+        {
+            speed_pct = (virt_ctrl->GetModeSpeed(m) * 100u) / smax;
+        }
+
         if(mname == "Off")
         {
             mode_id = ZOTAC_5070TI_MODE_OFF;
             is_on = false;
+            lock_mode = true;
         }
         else if(mname == "Breathing")
         {
             mode_id = ZOTAC_5070TI_MODE_BREATHING;
+            lock_mode = true;
         }
         else if(mname == "Spectrum Cycle")
         {
             mode_id = ZOTAC_5070TI_MODE_COLOR_CYCLE;
+            use_sw_cycle = (active_proto == ZOTAC_PROTO_4A);
+            lock_mode = true;
+        }
+        else if(mname == "Rainbow Wave")
+        {
+            mode_id = ZOTAC_5070TI_MODE_RAINBOW;
+            use_sw_cycle = (active_proto == ZOTAC_PROTO_4A);
+            lock_mode = true;
+        }
+        else if(mname == "Hardware Fade")
+        {
+            mode_id = ZOTAC_5070TI_MODE_HW_FADE;
+            lock_mode = true;
+        }
+        else if(mname == "Spectrum Breathe")
+        {
+            mode_id = ZOTAC_5070TI_MODE_SPECTRUM_BREATHE;
+            lock_mode = true;
         }
         else if(mname == "Static")
         {
@@ -625,12 +710,24 @@ void OpenRGBZotac5070TiPlugin::HandleVirtualUpdate()
         {
             mode_id = ZOTAC_5070TI_MODE_DIRECT;
         }
+    }
 
-        unsigned int smax = virt_ctrl->GetModeSpeedMax(m);
-        if(smax > 0)
-        {
-            speed_pct = (virt_ctrl->GetModeSpeed(m) * 100u) / smax;
-        }
+    mirrored_cycle_active.store(false);
+    virtual_mode_locked.store(lock_mode);
+    sw_cycle_speed_pct.store(speed_pct);
+    sw_cycle_active.store(use_sw_cycle);
+
+    if(use_sw_cycle)
+    {
+        HsvToRgb(sw_cycle_hue, r, g, b);
+        last_r = r;
+        last_g = g;
+        last_b = b;
+        last_mode_id = ZOTAC_5070TI_MODE_STATIC;
+        last_speed_pct = speed_pct;
+        last_is_on = true;
+        WriteModeNVAPI(ZOTAC_5070TI_MODE_STATIC, r, g, b, speed_pct, true, false);
+        return;
     }
 
     TryExtractControllerColor(virt_ctrl, r, g, b);
@@ -697,6 +794,36 @@ void OpenRGBZotac5070TiPlugin::RegisterVirtualGPUDevice()
     m_cycle.speed      = 50;
     setup.modes.push_back(m_cycle);
 
+    mode m_rainbow;
+    m_rainbow.name       = "Rainbow Wave";
+    m_rainbow.value      = ZOTAC_5070TI_MODE_RAINBOW;
+    m_rainbow.flags      = MODE_FLAG_HAS_SPEED;
+    m_rainbow.color_mode = MODE_COLORS_NONE;
+    m_rainbow.speed_min  = 0;
+    m_rainbow.speed_max  = 100;
+    m_rainbow.speed      = 50;
+    setup.modes.push_back(m_rainbow);
+
+    mode m_hw_fade;
+    m_hw_fade.name       = "Hardware Fade";
+    m_hw_fade.value      = ZOTAC_5070TI_MODE_HW_FADE;
+    m_hw_fade.flags      = MODE_FLAG_HAS_SPEED;
+    m_hw_fade.color_mode = MODE_COLORS_NONE;
+    m_hw_fade.speed_min  = 0;
+    m_hw_fade.speed_max  = 100;
+    m_hw_fade.speed      = 50;
+    setup.modes.push_back(m_hw_fade);
+
+    mode m_spec_breathe;
+    m_spec_breathe.name       = "Spectrum Breathe";
+    m_spec_breathe.value      = ZOTAC_5070TI_MODE_SPECTRUM_BREATHE;
+    m_spec_breathe.flags      = MODE_FLAG_HAS_SPEED;
+    m_spec_breathe.color_mode = MODE_COLORS_NONE;
+    m_spec_breathe.speed_min  = 0;
+    m_spec_breathe.speed_max  = 100;
+    m_spec_breathe.speed      = 50;
+    setup.modes.push_back(m_spec_breathe);
+
     mode m_off;
     m_off.name       = "Off";
     m_off.value      = ZOTAC_5070TI_MODE_OFF;
@@ -755,7 +882,8 @@ bool OpenRGBZotac5070TiPlugin::WriteModeNVAPI(
     std::lock_guard<std::mutex> lock(nvapi_mutex);
 
     uint64_t now_ms = GetTickCount64();
-    if(!force_immediate && (now_ms - last_hw_write_ms) < 75ULL)
+    uint64_t min_interval_ms = (active_proto == ZOTAC_PROTO_4A) ? 180ULL : 75ULL;
+    if(!force_immediate && (now_ms - last_hw_write_ms) < min_interval_ms)
     {
         pending_r         = r;
         pending_g         = g;
@@ -779,10 +907,13 @@ bool OpenRGBZotac5070TiPlugin::WriteModeNVAPI(
     {
         uint8_t mode_4a = 0x00;
         if(mode_id == ZOTAC_5070TI_MODE_BREATHING) mode_4a = 0x01;
-        else if(mode_id == ZOTAC_5070TI_MODE_COLOR_CYCLE) mode_4a = 0x02;
+        else if(mode_id == ZOTAC_5070TI_MODE_COLOR_CYCLE || mode_id == ZOTAC_5070TI_MODE_HW_FADE) mode_4a = 0x02;
+        else if(mode_id == ZOTAC_5070TI_MODE_RAINBOW || mode_id == ZOTAC_5070TI_MODE_SPECTRUM_BREATHE) mode_4a = 0x04;
         uint8_t clamped_spd = static_cast<uint8_t>(std::min(speed_pct, 100u));
-        uint8_t spd_fe = static_cast<uint8_t>((clamped_spd * 0xFEu) / 100u);
-        uint8_t on_time = (mode_4a == 0x00) ? 45u : static_cast<uint8_t>(0xFEu - spd_fe);
+        // Calibrated to FireStorm 5.x on_time window (0x05 fastest .. 0x3C slowest; default ~0x20 / 0x2D)
+        uint8_t on_time = (mode_4a == 0x00)
+            ? static_cast<uint8_t>(45u)
+            : static_cast<uint8_t>(60u - ((clamped_spd * 55u) / 100u));
         uint8_t data_pkt[32] = {
             0x00,
             is_on ? static_cast<uint8_t>(0x01) : static_cast<uint8_t>(0x00),
@@ -1203,29 +1334,91 @@ std::string OpenRGBZotac5070TiPlugin::ScanNVAPIBus()
 #endif
 }
 
+void OpenRGBZotac5070TiPlugin::FlushPendingNVAPI()
+{
+    int pm = 0;
+    unsigned char pr = 0, pg = 0, pb = 0;
+    unsigned int ps = 50;
+    bool pon = true;
+    {
+        std::lock_guard<std::mutex> lock(nvapi_mutex);
+        if(!pending_hw_flush)
+        {
+            return;
+        }
+        uint64_t now_ms = GetNowMs();
+        uint64_t min_interval_ms = (active_proto == ZOTAC_PROTO_4A) ? 180ULL : 75ULL;
+        if((now_ms - last_hw_write_ms.load()) < min_interval_ms)
+        {
+            return;
+        }
+        pm = pending_mode_id;
+        pr = pending_r;
+        pg = pending_g;
+        pb = pending_b;
+        ps = pending_speed_pct;
+        pon = pending_is_on;
+        pending_hw_flush = false;
+    }
+    WriteModeNVAPI(pm, pr, pg, pb, ps, pon, true);
+}
+
 void OpenRGBZotac5070TiPlugin::OnSyncTimerTick()
 {
-    if(pending_hw_flush)
+    uint64_t now_ms = GetNowMs();
+    uint64_t min_interval_ms = (active_proto == ZOTAC_PROTO_4A) ? 180ULL : 75ULL;
+
+    FlushPendingNVAPI();
+
+    if(sw_cycle_active.load() || (mirror_active && !virtual_mode_locked.load() && mirrored_cycle_active.load()))
     {
-        uint64_t now_ms = 0;
-#ifdef _WIN32
-        now_ms = GetTickCount64();
-#endif
-        if((now_ms - last_hw_write_ms) >= 75ULL)
+        if(last_cycle_step_ms == 0)
         {
-            WriteModeNVAPI(pending_mode_id, pending_r, pending_g, pending_b, pending_speed_pct, pending_is_on, true);
+            last_cycle_step_ms = now_ms;
+        }
+        uint64_t dt_ms = now_ms - last_cycle_step_ms;
+        if(dt_ms > 0)
+        {
+            float spd = static_cast<float>(std::min(sw_cycle_speed_pct.load(), 100u));
+            float deg_per_sec = 15.0f + (spd * 1.3f);
+            sw_cycle_hue += (deg_per_sec * static_cast<float>(dt_ms)) / 1000.0f;
+            while(sw_cycle_hue >= 360.0f) sw_cycle_hue -= 360.0f;
+            last_cycle_step_ms = now_ms;
+        }
+
+        if((now_ms - last_hw_write_ms.load()) >= min_interval_ms)
+        {
+            unsigned char cr = 0, cg = 0, cb = 0;
+            HsvToRgb(sw_cycle_hue, cr, cg, cb);
+            last_r = cr;
+            last_g = cg;
+            last_b = cb;
+            WriteModeNVAPI(ZOTAC_5070TI_MODE_STATIC, cr, cg, cb, 50, true, false);
+            if(virt_ctrl != nullptr)
+            {
+                virt_ctrl->SetAllColors(ToRGBColor(cr, cg, cb));
+            }
         }
     }
-
-    if(mirror_active)
+    else
     {
-        SyncFromOpenRGBDevices();
+        last_cycle_step_ms = now_ms;
+    }
+
+    // Do not overwrite GPU with mirror while user/Effects is actively driving the GPU device
+    if(mirror_active && !virtual_mode_locked.load())
+    {
+        uint64_t last_virt = last_virtual_update_ms.load();
+        if(last_virt == 0 || (now_ms - last_virt) > 1500ULL)
+        {
+            SyncFromOpenRGBDevices();
+        }
     }
 }
 
 void OpenRGBZotac5070TiPlugin::SyncFromOpenRGBDevices()
 {
-    if(api == nullptr || !mirror_active)
+    if(api == nullptr || !mirror_active || virtual_mode_locked.load())
     {
         return;
     }
@@ -1236,7 +1429,7 @@ void OpenRGBZotac5070TiPlugin::SyncFromOpenRGBDevices()
         return;
     }
 
-    // Track colors across all non-self OpenRGB controllers so changing ANY device updates the GPU
+    // Track both RGB color changes AND built-in hardware cycle modes across other OpenRGB devices
     bool changed_found = false;
     unsigned char changed_r = last_r;
     unsigned char changed_g = last_g;
@@ -1247,6 +1440,7 @@ void OpenRGBZotac5070TiPlugin::SyncFromOpenRGBDevices()
     unsigned char init_g = last_g;
     unsigned char init_b = last_b;
     bool had_tracked_before = !tracked_ctrl_colors.empty();
+    bool other_hw_cycle_found = false;
 
     std::unordered_map<RGBControllerInterface*, uint32_t> next_map;
     for(size_t i = 0; i < controllers.size(); i++)
@@ -1255,6 +1449,15 @@ void OpenRGBZotac5070TiPlugin::SyncFromOpenRGBDevices()
         if(ctrl == nullptr || ctrl == virt_ctrl || ctrl->GetHidden())
         {
             continue;
+        }
+
+        int m_active = ctrl->GetActiveMode();
+        if(m_active >= 0 && static_cast<unsigned int>(m_active) < ctrl->GetModeCount())
+        {
+            if(IsCycleModeName(ctrl->GetModeName(static_cast<unsigned int>(m_active))))
+            {
+                other_hw_cycle_found = true;
+            }
         }
 
         unsigned char cr = 0, cg = 0, cb = 0;
@@ -1288,43 +1491,43 @@ void OpenRGBZotac5070TiPlugin::SyncFromOpenRGBDevices()
 
     tracked_ctrl_colors = std::move(next_map);
 
-    unsigned char target_r = last_r;
-    unsigned char target_g = last_g;
-    unsigned char target_b = last_b;
-    bool should_apply = false;
-
     if(changed_found)
     {
-        target_r = changed_r;
-        target_g = changed_g;
-        target_b = changed_b;
-        should_apply = true;
-    }
-    else if(!has_applied_color && initial_lit_found)
-    {
-        target_r = init_r;
-        target_g = init_g;
-        target_b = init_b;
-        should_apply = true;
-    }
-
-    if(!should_apply)
-    {
+        // Software Effect / Direct frame streaming on another device: follow exact RGB frames
+        mirrored_cycle_active.store(false);
+        if(has_applied_color && changed_r == last_r && changed_g == last_g && changed_b == last_b)
+        {
+            return;
+        }
+        last_r = changed_r;
+        last_g = changed_g;
+        last_b = changed_b;
+        WriteModeNVAPI(ZOTAC_5070TI_MODE_STATIC, last_r, last_g, last_b, 50, true, false);
+        if(virt_ctrl != nullptr)
+        {
+            virt_ctrl->SetAllColors(ToRGBColor(last_r, last_g, last_b));
+        }
         return;
     }
 
-    if(has_applied_color && target_r == last_r && target_g == last_g && target_b == last_b)
+    if(other_hw_cycle_found)
     {
+        mirrored_cycle_active.store(true);
         return;
     }
 
-    last_r = target_r;
-    last_g = target_g;
-    last_b = target_b;
-    WriteModeNVAPI(ZOTAC_5070TI_MODE_STATIC, last_r, last_g, last_b, 50, true, false);
-    if(virt_ctrl != nullptr)
+    mirrored_cycle_active.store(false);
+
+    if(!has_applied_color && initial_lit_found)
     {
-        virt_ctrl->SetAllColors(ToRGBColor(last_r, last_g, last_b));
+        last_r = init_r;
+        last_g = init_g;
+        last_b = init_b;
+        WriteModeNVAPI(ZOTAC_5070TI_MODE_STATIC, last_r, last_g, last_b, 50, true, false);
+        if(virt_ctrl != nullptr)
+        {
+            virt_ctrl->SetAllColors(ToRGBColor(last_r, last_g, last_b));
+        }
     }
 }
 
@@ -1478,10 +1681,17 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
         mirror_active = checked;
         if(checked)
         {
+            sw_cycle_active.store(false);
+            virtual_mode_locked.store(false);
+            last_virtual_update_ms.store(0);
             tracked_ctrl_colors.clear();
             has_applied_color = false;
             SyncFromOpenRGBDevices();
             state_label->setText("Live mirroring enabled: following active OpenRGB devices.");
+        }
+        else
+        {
+            mirrored_cycle_active.store(false);
         }
     });
 
@@ -1495,6 +1705,10 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
         QColor chosen = QColorDialog::getColor(initial, widget, "Choose ZOTAC RTX 5070 Ti Color");
         if(chosen.isValid())
         {
+            sw_cycle_active.store(false);
+            mirrored_cycle_active.store(false);
+            virtual_mode_locked.store(false);
+            last_virtual_update_ms.store(GetNowMs());
             last_r = static_cast<unsigned char>(chosen.red());
             last_g = static_cast<unsigned char>(chosen.green());
             last_b = static_cast<unsigned char>(chosen.blue());
@@ -1522,6 +1736,8 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
         sync_combos();
         if(mirror_active)
         {
+            virtual_mode_locked.store(false);
+            last_virtual_update_ms.store(0);
             tracked_ctrl_colors.clear();
             SyncFromOpenRGBDevices();
         }
