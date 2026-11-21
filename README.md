@@ -1,4 +1,4 @@
-# OpenRGB 1.1 ZOTAC RTX 5070 Ti Plugin (ZOTAC GAMING RTX 5070 Ti SOLID OC)
+# OpenRGB 1.1 ZOTAC RTX 5070 Ti Plugin (ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC)
 
 ## Target Hardware Profile
 - PCI Vendor / Device: 0x10DE:0x2C05 (NVIDIA GeForce RTX 5070 Ti, GB203)

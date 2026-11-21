@@ -20,7 +20,7 @@ OpenRGBPluginInfo OpenRGBZotac5070TiPlugin::GetPluginInfo()
 {
     OpenRGBPluginInfo info;
     info.Name           = "ZOTAC RTX 5070 Ti SPECTRA Bridge";
-    info.Description    = "Registers ZOTAC GAMING RTX 5070 Ti SOLID OC (0x19DA:0x2765) over NVAPI/I2C directly into OpenRGB.";
+    info.Description    = "Registers ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC (0x19DA:0x2765) over NVAPI/I2C directly into OpenRGB.";
     info.Version        = "1.0.0";
     info.Commit         = "local";
     info.Location       = OPENRGB_PLUGIN_LOCATION_TOP;
@@ -82,11 +82,11 @@ void OpenRGBZotac5070TiPlugin::ScanAndRegisterZotacGPU()
 
         Zotac5070TiController* controller = new Zotac5070TiController(bus, ZOTAC_SPECTRA_I2C_ADDR);
         RGBController_Zotac5070Ti* rgb_controller = new RGBController_Zotac5070Ti(controller);
-        rgb_controller->name = "ZOTAC GAMING RTX 5070 Ti SOLID OC";
+        rgb_controller->name = "ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC";
 
         rm->RegisterRGBController(rgb_controller);
         detected = true;
-        status_line = "Registered ZOTAC GAMING RTX 5070 Ti SOLID OC on " + std::string(bus->device_name) + " (I2C 0x49).";
+        status_line = "Registered ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC on " + std::string(bus->device_name) + " (I2C 0x49).";
         break;
     }
 

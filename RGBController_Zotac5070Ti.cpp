@@ -44,7 +44,7 @@ void Zotac5070TiController::SetZoneColor(
 RGBController_Zotac5070Ti::RGBController_Zotac5070Ti(Zotac5070TiController* controller_ptr)
     : controller(controller_ptr)
 {
-    name        = "ZOTAC GAMING RTX 5070 Ti SOLID OC";
+    name        = "ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC";
     vendor      = "ZOTAC";
     type        = DEVICE_TYPE_GPU;
     description = "ZOTAC GAMING GeForce RTX 5070 Ti SPECTRA RGB Controller";
