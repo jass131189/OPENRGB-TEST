@@ -2,6 +2,9 @@
 #include "RGBController_Zotac5070Ti.h"
 #include "i2c_smbus.h"
 
+#include "LogManager.h"
+#include "StringUtils.h"
+
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -10,12 +13,16 @@
 #include <QColorDialog>
 #include <QColor>
 
+#include <algorithm>
 #include <cstdint>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -502,4 +509,20 @@ void OpenRGBZotac5070TiPlugin::ResourceManagerUpdated(unsigned int /*event_type*
 
 void OpenRGBZotac5070TiPlugin::SettingsManagerUpdated(unsigned int /*event_type*/)
 {
+}
+
+LogManager* LogManager::get()
+{
+    alignas(LogManager) static unsigned char stub_storage[sizeof(LogManager)] = {};
+    return reinterpret_cast<LogManager*>(stub_storage);
+}
+
+void LogManager::LogEntry(const char* /*filename*/, int /*line*/, unsigned int /*level*/, const char* /*fmt*/, ...)
+{
+}
+
+const std::string StringUtils::remove_null_terminating_chars(std::string str)
+{
+    str.erase(std::remove(str.begin(), str.end(), '\0'), str.end());
+    return str;
 }
