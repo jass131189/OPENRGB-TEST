@@ -1,12 +1,11 @@
 #include "RGBController_Zotac5070Ti.h"
-#include <chrono>
+#include <algorithm>
 #include <cstdio>
-#include <thread>
+#include <cstring>
 
 Zotac5070TiController::Zotac5070TiController(i2c_smbus_interface* bus_ptr, uint8_t dev_addr)
     : bus(bus_ptr), dev(dev_addr)
-{
-}
+{}
 
 Zotac5070TiController::~Zotac5070TiController() = default;
 
@@ -27,9 +26,10 @@ void Zotac5070TiController::SetZoneColor(
     uint8_t brightness
 )
 {
-    (void)zone;
-    uint8_t mode_4a = 0x00; // Static
-    uint8_t is_on   = (mode == ZOTAC_5070TI_MODE_OFF) ? 0x00 : 0x01;
+    const uint8_t z_idx   = (zone < 2) ? zone : 0;
+    uint8_t       mode_4a = 0x00;
+    const uint8_t is_on   = (mode == ZOTAC_5070TI_MODE_OFF) ? 0x00 : 0x01;
+
     switch(mode)
     {
         case ZOTAC_5070TI_MODE_BREATHING:   mode_4a = 0x01; break;
@@ -37,14 +37,29 @@ void Zotac5070TiController::SetZoneColor(
         case ZOTAC_5070TI_MODE_RAINBOW:     mode_4a = 0x04; break;
         default:                            mode_4a = 0x00; break;
     }
-    uint8_t spd_byte = static_cast<uint8_t>((speed * 0xFE) / 10);
-    uint8_t on_time  = (mode_4a == 0x00) ? 45 : static_cast<uint8_t>(0xFE - spd_byte);
+
+    const uint8_t clamped_brt = std::min<uint8_t>(brightness, 100);
+    const uint8_t scaled_r    = static_cast<uint8_t>((static_cast<unsigned int>(r) * clamped_brt) / 100u);
+    const uint8_t scaled_g    = static_cast<uint8_t>((static_cast<unsigned int>(g) * clamped_brt) / 100u);
+    const uint8_t scaled_b    = static_cast<uint8_t>((static_cast<unsigned int>(b) * clamped_brt) / 100u);
+
+    const uint8_t spd_byte = static_cast<uint8_t>((std::min<uint8_t>(speed, 10) * 0xFE) / 10);
+    const uint8_t on_time  = (mode_4a == 0x00) ? 45 : static_cast<uint8_t>(0xFE - spd_byte);
+
     uint8_t data_pkt[32] =
     {
-        0x00, is_on, mode_4a, r, g, b, on_time, 10, 0x08
+        0x00, is_on, mode_4a, scaled_r, scaled_g, scaled_b, on_time, 10, 0x08
     };
+
+    // Skip redundant identical I2C writes; removed blocking 200ms sleep
+    if(has_last_pkt[z_idx] && std::memcmp(last_pkt[z_idx], data_pkt, 9) == 0)
+    {
+        return;
+    }
+
     bus->i2c_smbus_write_i2c_block_data(dev, 0x5A, sizeof(data_pkt), data_pkt);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::memcpy(last_pkt[z_idx], data_pkt, 9);
+    has_last_pkt[z_idx] = true;
 }
 
 RGBController_Zotac5070Ti::RGBController_Zotac5070Ti(Zotac5070TiController* controller_ptr)
@@ -57,59 +72,59 @@ RGBController_Zotac5070Ti::RGBController_Zotac5070Ti(Zotac5070TiController* cont
     location    = controller->GetDeviceLocation();
 
     mode Direct;
-    Direct.name       = "Direct";
-    Direct.value      = ZOTAC_5070TI_MODE_DIRECT;
-    Direct.flags      = MODE_FLAG_HAS_PER_LED_COLOR | MODE_FLAG_HAS_BRIGHTNESS;
-    Direct.color_mode = MODE_COLORS_PER_LED;
+    Direct.name           = "Direct";
+    Direct.value          = ZOTAC_5070TI_MODE_DIRECT;
+    Direct.flags          = MODE_FLAG_HAS_PER_LED_COLOR | MODE_FLAG_HAS_BRIGHTNESS;
+    Direct.color_mode     = MODE_COLORS_PER_LED;
     Direct.brightness_min = 0;
     Direct.brightness_max = 100;
     Direct.brightness     = 100;
     modes.push_back(Direct);
 
     mode Static;
-    Static.name       = "Static";
-    Static.value      = ZOTAC_5070TI_MODE_STATIC;
-    Static.flags      = MODE_FLAG_HAS_PER_LED_COLOR | MODE_FLAG_HAS_BRIGHTNESS;
-    Static.color_mode = MODE_COLORS_PER_LED;
+    Static.name           = "Static";
+    Static.value          = ZOTAC_5070TI_MODE_STATIC;
+    Static.flags          = MODE_FLAG_HAS_PER_LED_COLOR | MODE_FLAG_HAS_BRIGHTNESS;
+    Static.color_mode     = MODE_COLORS_PER_LED;
     Static.brightness_min = 0;
     Static.brightness_max = 100;
     Static.brightness     = 100;
     modes.push_back(Static);
 
     mode Breathing;
-    Breathing.name       = "Breathing";
-    Breathing.value      = ZOTAC_5070TI_MODE_BREATHING;
-    Breathing.flags      = MODE_FLAG_HAS_PER_LED_COLOR | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_BRIGHTNESS;
-    Breathing.color_mode = MODE_COLORS_PER_LED;
-    Breathing.speed_min  = 1;
-    Breathing.speed_max  = 10;
-    Breathing.speed      = 5;
+    Breathing.name           = "Breathing";
+    Breathing.value          = ZOTAC_5070TI_MODE_BREATHING;
+    Breathing.flags          = MODE_FLAG_HAS_PER_LED_COLOR | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_BRIGHTNESS;
+    Breathing.color_mode     = MODE_COLORS_PER_LED;
+    Breathing.speed_min      = 1;
+    Breathing.speed_max      = 10;
+    Breathing.speed          = 5;
     Breathing.brightness_min = 0;
     Breathing.brightness_max = 100;
     Breathing.brightness     = 100;
     modes.push_back(Breathing);
 
     mode ColorCycle;
-    ColorCycle.name       = "Spectrum Cycle";
-    ColorCycle.value      = ZOTAC_5070TI_MODE_COLOR_CYCLE;
-    ColorCycle.flags      = MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_BRIGHTNESS;
-    ColorCycle.color_mode = MODE_COLORS_NONE;
-    ColorCycle.speed_min  = 1;
-    ColorCycle.speed_max  = 10;
-    ColorCycle.speed      = 5;
+    ColorCycle.name           = "Spectrum Cycle";
+    ColorCycle.value          = ZOTAC_5070TI_MODE_COLOR_CYCLE;
+    ColorCycle.flags          = MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_BRIGHTNESS;
+    ColorCycle.color_mode     = MODE_COLORS_NONE;
+    ColorCycle.speed_min      = 1;
+    ColorCycle.speed_max      = 10;
+    ColorCycle.speed          = 5;
     ColorCycle.brightness_min = 0;
     ColorCycle.brightness_max = 100;
     ColorCycle.brightness     = 100;
     modes.push_back(ColorCycle);
 
     mode Rainbow;
-    Rainbow.name       = "Rainbow Wave";
-    Rainbow.value      = ZOTAC_5070TI_MODE_RAINBOW;
-    Rainbow.flags      = MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_BRIGHTNESS;
-    Rainbow.color_mode = MODE_COLORS_NONE;
-    Rainbow.speed_min  = 1;
-    Rainbow.speed_max  = 10;
-    Rainbow.speed      = 5;
+    Rainbow.name           = "Rainbow Wave";
+    Rainbow.value          = ZOTAC_5070TI_MODE_RAINBOW;
+    Rainbow.flags          = MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_BRIGHTNESS;
+    Rainbow.color_mode     = MODE_COLORS_NONE;
+    Rainbow.speed_min      = 1;
+    Rainbow.speed_max      = 10;
+    Rainbow.speed          = 5;
     Rainbow.brightness_min = 0;
     Rainbow.brightness_max = 100;
     Rainbow.brightness     = 100;
@@ -178,7 +193,6 @@ void RGBController_Zotac5070Ti::UpdateZoneLEDs(int zone)
     {
         return;
     }
-
     RGBColor color      = colors[zone];
     uint8_t  r          = RGBGetRValue(color);
     uint8_t  g          = RGBGetGValue(color);
@@ -186,7 +200,6 @@ void RGBController_Zotac5070Ti::UpdateZoneLEDs(int zone)
     uint8_t  mode_val   = static_cast<uint8_t>(modes[active_mode].value);
     uint8_t  speed      = static_cast<uint8_t>(modes[active_mode].speed);
     uint8_t  brightness = static_cast<uint8_t>(modes[active_mode].brightness);
-
     controller->SetZoneColor(static_cast<uint8_t>(zone), mode_val, r, g, b, speed, brightness);
 }
 

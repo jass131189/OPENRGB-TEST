@@ -4,10 +4,13 @@
 #include <QWidget>
 #include <QMenu>
 #include <QTimer>
+#include <QLabel>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include "OpenRGBPluginInterface.h"
 
@@ -49,57 +52,91 @@ private:
     static void         OnVirtualUpdateSingleLED(void* ptr, int led);
     static void         OnVirtualUpdateMode(void* ptr);
 
+    void                StartWorkerThread();
+    void                StopWorkerThread();
+    void                WorkerLoop();
+
     void                ScanAndRegisterZotacGPU();
     void                RegisterVirtualGPUDevice();
     void                HandleVirtualUpdate();
-    bool                WriteColorNVAPI(unsigned char r, unsigned char g, unsigned char b);
-    bool                WriteModeNVAPI(int mode_id, unsigned char r, unsigned char g, unsigned char b, unsigned int speed_pct, bool is_on, bool force_immediate);
-    void                FlushPendingNVAPI();
+    void                SubmitTargetState(int mode_id, unsigned char r, unsigned char g, unsigned char b, unsigned int speed_pct, bool is_on, bool immediate_snap);
+    bool                WriteHardwareNVAPI(int mode_id, unsigned char r, unsigned char g, unsigned char b, unsigned int speed_pct, bool is_on, uint32_t& out_write_us);
+    uint32_t            NegotiateFastestBusSpeed();
+    std::string         BenchmarkBusSpeed();
     std::string         ScanNVAPIBus();
     void                SyncFromOpenRGBDevices();
     void                OnSyncTimerTick();
+    void                UpdateTelemetryUI();
 
-    OpenRGBPluginAPIInterface*                     api = nullptr;
-    QWidget*                                       widget = nullptr;
-    QTimer*                                        sync_timer = nullptr;
-    RGBControllerInterface*                        virt_ctrl = nullptr;
-    std::mutex                                     nvapi_mutex;
+    OpenRGBPluginAPIInterface*                            api = nullptr;
+    QWidget*                                              widget = nullptr;
+    QLabel*                                               state_label = nullptr;
+    QLabel*                                               telemetry_label = nullptr;
+    QTimer*                                               sync_timer = nullptr;
+    RGBControllerInterface*                               virt_ctrl = nullptr;
+
+    // Thread synchronization: target_mutex is never held during NVAPI I2C calls
+    std::mutex                                            nvapi_mutex;
+    std::mutex                                            target_mutex;
+    std::condition_variable                               worker_cv;
+    std::thread                                           worker_thread;
+    std::atomic<bool>                                     worker_stop{false};
+
     std::unordered_map<RGBControllerInterface*, uint32_t> tracked_ctrl_colors;
-    std::atomic<bool>                              sw_cycle_active{false};
-    std::atomic<bool>                              mirrored_cycle_active{false};
-    std::atomic<bool>                              virtual_mode_locked{false};
-    std::atomic<unsigned int>                      sw_cycle_speed_pct{50};
-    std::atomic<uint64_t>                          last_virtual_update_ms{0};
-    float                                          sw_cycle_hue = 0.0f;
-    uint64_t                                       last_cycle_step_ms = 0;
-    bool                                           detected = false;
-    bool                                           mirror_active = true;
-    unsigned char                                  last_r = 56;
-    unsigned char                                  last_g = 189;
-    unsigned char                                  last_b = 248;
-    int                                            last_mode_id = 0;
-    unsigned int                                   last_speed_pct = 50;
-    bool                                           last_is_on = true;
-    std::atomic<uint64_t>                          last_hw_write_ms{0};
-    bool                                           pending_hw_flush = false;
-    unsigned char                                  pending_r = 56;
-    unsigned char                                  pending_g = 189;
-    unsigned char                                  pending_b = 248;
-    int                                            pending_mode_id = 0;
-    unsigned int                                   pending_speed_pct = 50;
-    bool                                           pending_is_on = true;
-    uint8_t                                        active_i2c_addr = 0x4A;
-    uint32_t                                       active_display_mask = 1u;
-    uint8_t                                        active_is_ddc = 1;
-    uint8_t                                        active_port_id = 1;
-    uint32_t                                       active_port_set = 1;
-    uint32_t                                       active_speed_khz = 2u;
-    bool                                           active_use_ex_api = false;
-    bool                                           active_reg_split = true;
-    int                                            active_proto = ZOTAC_PROTO_4A;
-    bool                                           has_applied_color = false;
-    int                                            last_nvapi_status = 0;
-    std::string                                    last_nvapi_error;
-    std::string                                    detected_fw_version;
-    std::string                                    status_line;
+    std::atomic<bool>                                     sw_cycle_active{false};
+    std::atomic<bool>                                     mirrored_cycle_active{false};
+    std::atomic<bool>                                     virtual_mode_locked{false};
+    std::atomic<unsigned int>                             sw_cycle_speed_pct{50};
+    std::atomic<uint64_t>                                 last_virtual_update_ms{0};
+
+    // Smooth Engine configuration (tunable live in Plugin UI & saved in OpenRGB profile)
+    std::atomic<uint32_t>                                 target_frame_ms{16};
+    std::atomic<uint32_t>                                 smooth_window_ms{120};
+    std::atomic<int>                                      i2c_speed_pref{0}; // 0=Auto, 4=100kHz, 3=40kHz, 2=10kHz
+    std::atomic<bool>                                     gamma_correction{true};
+    std::atomic<bool>                                     prefer_hw_native_cycle{false};
+
+    // Target state written by Qt/OpenRGB callbacks and consumed by WorkerLoop
+    unsigned char                                         target_r = 56;
+    unsigned char                                         target_g = 189;
+    unsigned char                                         target_b = 248;
+    int                                                   target_mode_id = 0;
+    unsigned int                                          target_speed_pct = 50;
+    bool                                                  target_is_on = true;
+    bool                                                  target_dirty = true;
+    bool                                                  target_snap = true;
+
+    // Live telemetry published atomically by WorkerLoop for Qt UI
+    std::atomic<uint32_t>                                 displayed_rgb_packed{(56u << 16) | (189u << 8) | 248u};
+    std::atomic<uint32_t>                                 measured_write_us{0};
+    std::atomic<uint32_t>                                 measured_fps_x10{0};
+    std::atomic<uint64_t>                                 frames_sent{0};
+    std::atomic<uint64_t>                                 frames_coalesced{0};
+    uint64_t                                              last_ui_telemetry_ms = 0;
+
+    bool                                                  detected = false;
+    bool                                                  mirror_active = true;
+    unsigned char                                         last_r = 56;
+    unsigned char                                         last_g = 189;
+    unsigned char                                         last_b = 248;
+    uint32_t                                              last_qt_preview_rgb = 0;
+
+    uint8_t                                               active_i2c_addr = 0x4A;
+    uint32_t                                              active_display_mask = 1u;
+    uint8_t                                               active_is_ddc = 1;
+    uint8_t                                               active_port_id = 1;
+    uint32_t                                              active_port_set = 1;
+    uint32_t                                              active_speed_khz = 4u;
+    bool                                                  active_use_ex_api = false;
+    bool                                                  active_reg_split = true;
+    int                                                   active_proto = ZOTAC_PROTO_4A;
+    bool                                                  has_applied_color = false;
+    int                                                   last_nvapi_status = 0;
+    std::string                                           last_nvapi_error;
+    std::string                                           detected_fw_version;
+    std::string                                           status_line;
+
+    // Blackwell register shadow cache to skip unchanged single-byte I2C writes
+    uint8_t                                               bw_shadow[2][16] = {};
+    bool                                                  bw_shadow_valid[2] = { false, false };
 };

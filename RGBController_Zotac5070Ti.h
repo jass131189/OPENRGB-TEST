@@ -29,6 +29,8 @@ public:
 private:
     i2c_smbus_interface* bus;
     uint8_t              dev;
+    uint8_t              last_pkt[2][9] = {};
+    bool                 has_last_pkt[2] = { false, false };
 };
 
 class RGBController_Zotac5070Ti : public RGBController

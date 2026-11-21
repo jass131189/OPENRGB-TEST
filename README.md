@@ -1,26 +1,13 @@
-# OpenRGB 1.1 ZOTAC RTX 5070 Ti Plugin (ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC)
+# OpenRGB 1.1 ZOTAC RTX 5070 Ti Smooth Engine Plugin (v2.0.0)
 
-## Target Hardware Profile
-- PCI Vendor / Device: 0x10DE:0x2C05 (NVIDIA GeForce RTX 5070 Ti, GB203)
-- PCI Subsystem: 0x19DA:0x2765 (ZOTAC)
-- I2C Address: 0x4A
-- Zones: Side Lightbar, SPECTRA Emblem
+## What Changed in v2.0.0 (Anti-Stutter Redesign)
+1. **Removed 180 ms NVAPI Throttle & 200 ms Native Sleep**: Replaced the 5.5 FPS cap with an adaptive frame pacer (default 16 ms / 63 Hz target).
+2. **Dedicated Background Worker Thread**: All NVAPI I2C transactions now run off the Qt GUI thread using `std::thread` + `std::condition_variable`.
+3. **Auto Bus-Speed Negotiation (100 kHz -> 40 kHz -> 10 kHz)**: Benchmarks and selects the fastest ACKed DDC clock with automatic write-error fallback.
+4. **Linear-Light Temporal Interpolation (120 ms)**: Smoothly interpolates stepped colors from OpenRGB device mirroring or Effects in Gamma 2.2 linear light space.
+5. **Blackwell Dirty-Register Diffing**: Caches register shadows to cut transition writes from 16 byte calls per zone down to 3–4 bytes.
 
-## Option A — Cloud Build the .dll via GitHub Actions (No Local Visual Studio / Qt Required)
-1. Push the extracted files (including `.github/workflows/build-plugin.yml`) to a GitHub repository.
-2. Open the repository's **Actions** tab and download the compiled `OpenRGBZotac5070TiPlugin.dll` artifact.
-3. In OpenRGB 1.1 (running as Administrator, with FireStorm exited), open **Settings -> Plugins -> Install Plugin** and select the downloaded `.dll`.
-
-## Option B — Local Build (Windows Qt 6 / MSVC)
-1. Clone OpenRGB alongside this folder:
-   git clone https://gitlab.com/CalcProgrammer1/OpenRGB.git
-2. Configure & build with CMake:
-   cmake -B build -DOPENRGB_SRC_DIR=../OpenRGB
-   cmake --build build --config Release
-3. Copy the compiled library into your OpenRGB plugins directory:
-   - Windows: %APPDATA%\OpenRGB\plugins\OpenRGBZotac5070TiPlugin.dll
-   - Linux:   ~/.config/OpenRGB/plugins/libOpenRGBZotac5070TiPlugin.so
-
-## Option C — Zero-Compile Python SDK Bridge (Windows)
-1. Enable OpenRGB 1.1's **SDK Server** tab (**Start Server**).
-2. Close FireStorm, then run: `pip install openrgb-python && python zotac_openrgb_sync.py` (as Administrator).
+## Build via GitHub Actions
+1. Replace the files in your `OPENRGB-TEST` repository with this package.
+2. Push to `main` and download the `OpenRGBZotac5070TiPlugin.dll` artifact from the **Actions** tab.
+3. Close ZOTAC FireStorm, launch OpenRGB 1.1 as Administrator, and install the DLL under **Settings -> Plugins -> Install Plugin**.
