@@ -13,10 +13,12 @@
 #include <QComboBox>
 #include <QColorDialog>
 #include <QColor>
+#include <QSignalBlocker>
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -35,7 +37,7 @@
 #define NVIDIA_RTX5070TI_DEV        0x2C05
 #define ZOTAC_SUB_VEN               0x19DA
 #define ZOTAC_RTX5070TI_SUB_DEV     0x2765
-#define ZOTAC_SPECTRA_I2C_ADDR      0x4B
+#define ZOTAC_SPECTRA_I2C_ADDR      0x4A
 #define ZOTAC_ZONE_COUNT            2
 #define ZOTAC_WILDCARD_SUBDEV       false
 
@@ -149,7 +151,7 @@ namespace
                     unsigned char ping_pkt[2] = { 0x00, 0x00 };
                     if(bus->i2c_smbus_write_i2c_block_data(ZOTAC_SPECTRA_I2C_ADDR, 0x00, 2, ping_pkt) < 0)
                     {
-                        out_status = "Matched PCI ID on I2C bus, but address 0x4B did not ACK (close ZOTAC FireStorm).";
+                        out_status = "Matched PCI ID on I2C bus, but address 0x4A did not ACK (close ZOTAC FireStorm).";
                         continue;
                     }
                 }
@@ -159,7 +161,7 @@ namespace
                 rgb_controller->name = "ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC";
 
                 mgr->RegisterRGBController(rgb_controller);
-                out_status = "Registered ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC on native OpenRGB I2C address 0x4B.";
+                out_status = "Registered ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC on native OpenRGB I2C address 0x4A.";
                 return true;
             }
         }
@@ -271,29 +273,46 @@ namespace
         using NvInitFn         = int (__cdecl*)();
         using NvEnumGpusFn     = int (__cdecl*)(void**, int32_t*);
         using NvGetPciFn       = int (__cdecl*)(void*, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
+        using NvEnumDispFn     = int (__cdecl*)(uint32_t, void**);
+        using NvGetDispOutFn   = int (__cdecl*)(void*, uint32_t*);
+        using NvI2CWriteFn     = int (__cdecl*)(void*, NvI2CInfoV3*);
+        using NvI2CReadFn      = int (__cdecl*)(void*, NvI2CInfoV3*);
         using NvI2CWriteExFn   = int (__cdecl*)(void*, NvI2CInfoV3*, uint32_t*);
         using NvI2CReadExFn    = int (__cdecl*)(void*, NvI2CInfoV3*, uint32_t*);
         using NvGetErrMsgFn    = int (__cdecl*)(int, char*);
 
-        HMODULE        mod       = nullptr;
-        bool           init_ok   = false;
-        void*          gpu       = nullptr;
-        uint32_t       pci_dev   = 0;
-        uint32_t       pci_sub   = 0;
-        int            init_rc   = 0;
-        std::string    err_note;
+        HMODULE               mod       = nullptr;
+        bool                  init_ok   = false;
+        void*                 gpu       = nullptr;
+        uint32_t              pci_dev   = 0;
+        uint32_t              pci_sub   = 0;
+        int                   init_rc   = 0;
+        std::string           err_note;
+        std::vector<uint32_t> display_masks;
 
-        NvInitFn       init_fn   = nullptr;
-        NvEnumGpusFn   enum_fn   = nullptr;
-        NvGetPciFn     pci_fn    = nullptr;
-        NvI2CWriteExFn write_fn  = nullptr;
-        NvI2CReadExFn  read_fn   = nullptr;
-        NvGetErrMsgFn  err_fn    = nullptr;
+        NvInitFn              init_fn      = nullptr;
+        NvEnumGpusFn          enum_fn      = nullptr;
+        NvGetPciFn            pci_fn       = nullptr;
+        NvEnumDispFn          enum_disp_fn = nullptr;
+        NvGetDispOutFn        disp_out_fn  = nullptr;
+        NvI2CWriteFn          write_fn     = nullptr;
+        NvI2CReadFn           read_fn      = nullptr;
+        NvI2CWriteExFn        write_ex_fn  = nullptr;
+        NvI2CReadExFn         read_ex_fn   = nullptr;
+        NvGetErrMsgFn         err_fn       = nullptr;
 
         static NvapiSession& Get()
         {
             static NvapiSession instance;
             return instance;
+        }
+
+        void AddMaskUnique(uint32_t m)
+        {
+            if(std::find(display_masks.begin(), display_masks.end(), m) == display_masks.end())
+            {
+                display_masks.push_back(m);
+            }
         }
 
         bool EnsureReady()
@@ -319,14 +338,18 @@ namespace
                 return false;
             }
 
-            init_fn  = reinterpret_cast<NvInitFn>(query(0x0150E828u));
-            enum_fn  = reinterpret_cast<NvEnumGpusFn>(query(0xE5AC921Fu));
-            pci_fn   = reinterpret_cast<NvGetPciFn>(query(0x2DDFB66Eu));
-            write_fn = reinterpret_cast<NvI2CWriteExFn>(query(0x283AC65Au));
-            read_fn  = reinterpret_cast<NvI2CReadExFn>(query(0x4D7B0709u));
-            err_fn   = reinterpret_cast<NvGetErrMsgFn>(query(0x6C2D048Cu));
+            init_fn      = reinterpret_cast<NvInitFn>(query(0x0150E828u));
+            enum_fn      = reinterpret_cast<NvEnumGpusFn>(query(0xE5AC921Fu));
+            pci_fn       = reinterpret_cast<NvGetPciFn>(query(0x2DDFB66Eu));
+            enum_disp_fn = reinterpret_cast<NvEnumDispFn>(query(0x9ABDD40Du));
+            disp_out_fn  = reinterpret_cast<NvGetDispOutFn>(query(0xD995937Eu));
+            write_fn     = reinterpret_cast<NvI2CWriteFn>(query(0xE812EB07u));
+            read_fn      = reinterpret_cast<NvI2CReadFn>(query(0x2FDE12C5u));
+            write_ex_fn  = reinterpret_cast<NvI2CWriteExFn>(query(0x283AC65Au));
+            read_ex_fn   = reinterpret_cast<NvI2CReadExFn>(query(0x4D7B0709u));
+            err_fn       = reinterpret_cast<NvGetErrMsgFn>(query(0x6C2D048Cu));
 
-            if(init_fn == nullptr || enum_fn == nullptr || write_fn == nullptr || read_fn == nullptr)
+            if(init_fn == nullptr || enum_fn == nullptr || ((write_fn == nullptr || read_fn == nullptr) && (write_ex_fn == nullptr || read_ex_fn == nullptr)))
             {
                 err_note = "Required NVAPI I2C entry points unavailable";
                 return false;
@@ -374,18 +397,54 @@ namespace
                 }
             }
 
+            display_masks.clear();
+            AddMaskUnique(1u); // Verified FireStorm default display_mask on ZOTAC RTX 5070/5070Ti/5080
+            if(enum_disp_fn != nullptr && disp_out_fn != nullptr)
+            {
+                for(uint32_t idx = 0; idx < 16; idx++)
+                {
+                    void* disp_handle = nullptr;
+                    if(enum_disp_fn(idx, &disp_handle) != 0 || disp_handle == nullptr)
+                    {
+                        break;
+                    }
+                    uint32_t out_id = 0;
+                    if(disp_out_fn(disp_handle, &out_id) == 0 && out_id != 0)
+                    {
+                        AddMaskUnique(out_id);
+                    }
+                }
+            }
+            AddMaskUnique(2u);
+            AddMaskUnique(4u);
+            AddMaskUnique(8u);
+            AddMaskUnique(16u);
+            AddMaskUnique(0u);
+
             init_ok = true;
             err_note.clear();
             return true;
         }
 
-        int ReadReg(uint8_t addr, uint8_t reg, bool use_reg, uint8_t* out_buf, uint32_t len, uint8_t port_id, uint32_t port_set, uint32_t speed_khz, uint8_t is_ddc = 0)
+        int ReadI2C(
+            uint8_t  addr,
+            uint8_t  reg,
+            bool     use_reg,
+            uint8_t* out_buf,
+            uint32_t len,
+            uint32_t disp_mask,
+            uint8_t  is_ddc,
+            uint8_t  port_id,
+            uint32_t port_set,
+            uint32_t speed_khz,
+            bool     use_ex
+        )
         {
             if(!EnsureReady()) return -1;
             uint8_t reg_local = reg;
             NvI2CInfoV3 info = {};
             info.version         = static_cast<uint32_t>(sizeof(NvI2CInfoV3) | (3u << 16));
-            info.displayMask     = 0;
+            info.displayMask     = disp_mask;
             info.bIsDDCPort      = is_ddc;
             info.i2cDevAddress   = static_cast<uint8_t>(addr << 1);
             info.pbI2cRegAddress = use_reg ? &reg_local : nullptr;
@@ -397,18 +456,43 @@ namespace
             info.portId          = port_id;
             info.bIsPortIdSet    = port_set;
 
-            uint32_t unknown = 0;
-            return read_fn(gpu, &info, &unknown);
+            if(use_ex && read_ex_fn != nullptr)
+            {
+                uint32_t unknown = 0;
+                return read_ex_fn(gpu, &info, &unknown);
+            }
+            if(read_fn != nullptr)
+            {
+                return read_fn(gpu, &info);
+            }
+            if(read_ex_fn != nullptr)
+            {
+                uint32_t unknown = 0;
+                return read_ex_fn(gpu, &info, &unknown);
+            }
+            return -1;
         }
 
-        int WriteReg(uint8_t addr, uint8_t reg, bool use_reg, uint8_t* data_buf, uint32_t len, uint8_t port_id, uint32_t port_set, uint32_t speed_khz)
+        int WriteI2C(
+            uint8_t  addr,
+            uint8_t  reg,
+            bool     use_reg,
+            uint8_t* data_buf,
+            uint32_t len,
+            uint32_t disp_mask,
+            uint8_t  is_ddc,
+            uint8_t  port_id,
+            uint32_t port_set,
+            uint32_t speed_khz,
+            bool     use_ex
+        )
         {
             if(!EnsureReady()) return -1;
             uint8_t reg_local = reg;
             NvI2CInfoV3 info = {};
             info.version         = static_cast<uint32_t>(sizeof(NvI2CInfoV3) | (3u << 16));
-            info.displayMask     = 0;
-            info.bIsDDCPort      = 0;
+            info.displayMask     = disp_mask;
+            info.bIsDDCPort      = is_ddc;
             info.i2cDevAddress   = static_cast<uint8_t>(addr << 1);
             info.pbI2cRegAddress = use_reg ? &reg_local : nullptr;
             info.regAddrSize     = use_reg ? 1u : 0u;
@@ -419,8 +503,21 @@ namespace
             info.portId          = port_id;
             info.bIsPortIdSet    = port_set;
 
-            uint32_t unknown = 0;
-            return write_fn(gpu, &info, &unknown);
+            if(use_ex && write_ex_fn != nullptr)
+            {
+                uint32_t unknown = 0;
+                return write_ex_fn(gpu, &info, &unknown);
+            }
+            if(write_fn != nullptr)
+            {
+                return write_fn(gpu, &info);
+            }
+            if(write_ex_fn != nullptr)
+            {
+                uint32_t unknown = 0;
+                return write_ex_fn(gpu, &info, &unknown);
+            }
+            return -1;
         }
 
         std::string FormatError(int rc)
@@ -475,7 +572,21 @@ bool OpenRGBZotac5070TiPlugin::WriteColorNVAPI(unsigned char r, unsigned char g,
         return false;
     }
 
-    auto write_blackwell = [&](uint8_t addr, uint8_t port_id, uint32_t port_set, uint32_t speed_khz) -> int
+    auto write_zotac_4a = [&](uint8_t addr, uint32_t disp_mask, uint8_t is_ddc, uint8_t port_id, uint32_t port_set, uint32_t speed_khz, bool use_ex) -> int
+    {
+        uint8_t data_pkt[32] = {
+            0x00,             // [0] reset (0=no reset)
+            0x01,             // [1] on (1=on)
+            0x00,             // [2] ZOTAC_4A_GPU_MODE_STATIC
+            r, g, b,          // [3..5] RGB
+            45,               // [6] on_time
+            10,               // [7] off_time
+            0x08              // [8] custom preset, [9..31] = 0
+        };
+        return nv.WriteI2C(addr, 0x5A, true, data_pkt, 32u, disp_mask, is_ddc, port_id, port_set, speed_khz, use_ex);
+    };
+
+    auto write_blackwell = [&](uint8_t addr, uint32_t disp_mask, uint8_t is_ddc, uint8_t port_id, uint32_t port_set, uint32_t speed_khz, bool use_ex) -> int
     {
         for(uint8_t z = 0; z < ZOTAC_ZONE_COUNT; z++)
         {
@@ -492,16 +603,24 @@ bool OpenRGBZotac5070TiPlugin::WriteColorNVAPI(unsigned char r, unsigned char g,
             };
             for(int i = 0; i < 16; i++)
             {
-                uint8_t val = regs[i];
-                int rc = nv.WriteReg(addr, static_cast<uint8_t>(0x20 + i), true, &val, 1u, port_id, port_set, speed_khz);
+                uint8_t pair[2] = { static_cast<uint8_t>(0x20 + i), regs[i] };
+                int rc = nv.WriteI2C(addr, pair[0], true, &pair[1], 1u, disp_mask, is_ddc, port_id, port_set, speed_khz, use_ex);
+                if(rc != 0)
+                {
+                    rc = nv.WriteI2C(addr, 0x00, false, pair, 2u, disp_mask, is_ddc, port_id, port_set, speed_khz, use_ex);
+                }
                 if(rc != 0)
                 {
                     return rc;
                 }
                 Sleep(3);
             }
-            uint8_t commit_val = 0x01;
-            int crc = nv.WriteReg(addr, 0x17, true, &commit_val, 1u, port_id, port_set, speed_khz);
+            uint8_t commit_pair[2] = { 0x17, 0x01 };
+            int crc = nv.WriteI2C(addr, 0x17, true, &commit_pair[1], 1u, disp_mask, is_ddc, port_id, port_set, speed_khz, use_ex);
+            if(crc != 0)
+            {
+                crc = nv.WriteI2C(addr, 0x00, false, commit_pair, 2u, disp_mask, is_ddc, port_id, port_set, speed_khz, use_ex);
+            }
             if(crc != 0)
             {
                 return crc;
@@ -511,20 +630,23 @@ bool OpenRGBZotac5070TiPlugin::WriteColorNVAPI(unsigned char r, unsigned char g,
         return 0;
     };
 
-    auto write_spectra_v2 = [&](uint8_t addr, uint8_t port_id, uint32_t port_set, uint32_t speed_khz, bool reg_split) -> int
+    auto write_spectra_v2 = [&](uint8_t addr, uint32_t disp_mask, uint8_t is_ddc, uint8_t port_id, uint32_t port_set, uint32_t speed_khz, bool use_ex, bool reg_split) -> int
     {
         for(uint8_t z = 0; z < ZOTAC_ZONE_COUNT; z++)
         {
             uint8_t v2_pkt[10] = { 0x0F, 0x00, z, 0x00, r, g, b, 0x05, 0xFF, 0x01 };
-            int rc = nv.WriteReg(
+            int rc = nv.WriteI2C(
                 addr,
                 v2_pkt[0],
                 reg_split,
                 reg_split ? (v2_pkt + 1) : v2_pkt,
                 reg_split ? 9u : 10u,
+                disp_mask,
+                is_ddc,
                 port_id,
                 port_set,
-                speed_khz
+                speed_khz,
+                use_ex
             );
             if(rc != 0)
             {
@@ -534,14 +656,30 @@ bool OpenRGBZotac5070TiPlugin::WriteColorNVAPI(unsigned char r, unsigned char g,
         return 0;
     };
 
-    auto try_write = [&](uint8_t addr, bool blackwell, uint8_t port_id, uint32_t port_set, uint32_t speed_khz, bool reg_split) -> int
+    auto try_write = [&](uint8_t addr, int proto, uint32_t disp_mask, uint8_t is_ddc, uint8_t port_id, uint32_t port_set, uint32_t speed_khz, bool use_ex, bool reg_split) -> int
     {
-        return blackwell
-            ? write_blackwell(addr, port_id, port_set, speed_khz)
-            : write_spectra_v2(addr, port_id, port_set, speed_khz, reg_split);
+        if(proto == ZOTAC_PROTO_4A)
+        {
+            return write_zotac_4a(addr, disp_mask, is_ddc, port_id, port_set, speed_khz, use_ex);
+        }
+        if(proto == ZOTAC_PROTO_BLACKWELL)
+        {
+            return write_blackwell(addr, disp_mask, is_ddc, port_id, port_set, speed_khz, use_ex);
+        }
+        return write_spectra_v2(addr, disp_mask, is_ddc, port_id, port_set, speed_khz, use_ex, reg_split);
     };
 
-    int rc = try_write(active_i2c_addr, use_blackwell_proto, active_port_id, active_port_set, active_speed_khz, active_reg_split);
+    int rc = try_write(
+        active_i2c_addr,
+        active_proto,
+        active_display_mask,
+        active_is_ddc,
+        active_port_id,
+        active_port_set,
+        active_speed_khz,
+        active_use_ex_api,
+        active_reg_split
+    );
     if(rc == 0)
     {
         last_nvapi_status = 0;
@@ -552,56 +690,73 @@ bool OpenRGBZotac5070TiPlugin::WriteColorNVAPI(unsigned char r, unsigned char g,
 
     int first_err = rc;
 
-    // Probe OpenRGB ZotacBlackwell detect signature (0x4B reg 0x10) across common ports & speeds before heavy writes
-    struct PortSpeed { uint8_t port; uint32_t set; uint32_t speed; };
-    const PortSpeed probes[] = {
-        { 1, 1, 0u }, // Exact OpenRGB i2c_smbus_nvapi setting
-        { 1, 1, 4u },
-        { 0, 1, 0u },
-        { 2, 1, 0u },
-        { 3, 1, 0u },
-        { 0, 0, 0u },
-        { 0, 1, 4u },
-        { 2, 1, 4u },
-        { 0, 0, 4u },
+    struct RouteProbe { uint8_t is_ddc; uint8_t port; uint32_t set; uint32_t speed; bool use_ex; };
+    const RouteProbe routes[] = {
+        { 1, 1, 1, 2u, false }, // Exact Zotac 4A FireStorm DDC route (10kHz)
+        { 1, 1, 1, 4u, false }, // Exact FireStorm RTX 5070 Ti Blackwell DDC route (100kHz)
+        { 1, 1, 1, 0u, false }, // DDC default speed
+        { 0, 1, 1, 0u, true  }, // OpenRGB i2c_smbus_nvapi Ex route
+        { 0, 1, 1, 4u, true  }, // Ex 100kHz
+        { 0, 0, 1, 0u, true  },
+        { 0, 0, 0, 0u, true  },
     };
 
-    for(const auto& ps : probes)
+    // Safely probe read signatures before writing across all active display masks
+    for(const auto& rt : routes)
     {
-        uint8_t probe_val = 0;
-        if(nv.ReadReg(active_i2c_addr, 0x10, true, &probe_val, 1u, ps.port, ps.set, ps.speed) == 0)
+        std::vector<uint32_t> masks;
+        if(rt.is_ddc)
         {
-            int wrc = try_write(active_i2c_addr, use_blackwell_proto, ps.port, ps.set, ps.speed, true);
-            if(wrc == 0)
-            {
-                active_port_id    = ps.port;
-                active_port_set   = ps.set;
-                active_speed_khz  = ps.speed;
-                active_reg_split  = true;
-                last_nvapi_status = 0;
-                last_nvapi_error.clear();
-                has_applied_color = true;
-                return true;
-            }
+            masks = nv.display_masks;
         }
-    }
-
-    if(!use_blackwell_proto)
-    {
-        for(const auto& ps : probes)
+        else
         {
-            for(bool split : { true, false })
+            masks.push_back(0u);
+        }
+
+        for(uint32_t mask : masks)
+        {
+            if(rt.is_ddc && mask == 0u) continue;
+
+            uint8_t id_buf[32] = {};
+            if(nv.ReadI2C(active_i2c_addr, 0x5A, true, id_buf, 32u, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex) == 0 && id_buf[0] == 'N')
             {
-                int wrc = write_spectra_v2(active_i2c_addr, ps.port, ps.set, ps.speed, split);
+                int wrc = write_zotac_4a(active_i2c_addr, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex);
                 if(wrc == 0)
                 {
-                    active_port_id    = ps.port;
-                    active_port_set   = ps.set;
-                    active_speed_khz  = ps.speed;
-                    active_reg_split  = split;
-                    last_nvapi_status = 0;
+                    active_proto        = ZOTAC_PROTO_4A;
+                    active_display_mask = mask;
+                    active_is_ddc       = rt.is_ddc;
+                    active_port_id      = rt.port;
+                    active_port_set     = rt.set;
+                    active_speed_khz    = rt.speed;
+                    active_use_ex_api   = rt.use_ex;
+                    last_nvapi_status   = 0;
                     last_nvapi_error.clear();
-                    has_applied_color = true;
+                    has_applied_color   = true;
+                    return true;
+                }
+            }
+
+            uint8_t bw_val = 0;
+            if(nv.ReadI2C(active_i2c_addr, 0xF0, true, id_buf, 32u, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex) == 0 ||
+               nv.ReadI2C(active_i2c_addr, 0x10, true, &bw_val, 1u, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex) == 0)
+            {
+                int target_proto = (active_proto == ZOTAC_PROTO_V2) ? ZOTAC_PROTO_V2 : ZOTAC_PROTO_BLACKWELL;
+                int wrc = try_write(active_i2c_addr, target_proto, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex, true);
+                if(wrc == 0)
+                {
+                    active_proto        = target_proto;
+                    active_display_mask = mask;
+                    active_is_ddc       = rt.is_ddc;
+                    active_port_id      = rt.port;
+                    active_port_set     = rt.set;
+                    active_speed_khz    = rt.speed;
+                    active_use_ex_api   = rt.use_ex;
+                    active_reg_split    = true;
+                    last_nvapi_status   = 0;
+                    last_nvapi_error.clear();
+                    has_applied_color   = true;
                     return true;
                 }
             }
@@ -630,92 +785,167 @@ std::string OpenRGBZotac5070TiPlugin::ScanNVAPIBus()
     int last_rc = -1;
     bool adopted = false;
 
-    auto record_hit = [&](const char* label, uint8_t port, uint32_t set, uint32_t speed, uint8_t addr, uint8_t reg, uint8_t val, bool is_bw)
+    auto extract_ascii = [](const uint8_t* buf, int max_len) -> std::string
     {
-        char hit[72] = {};
-        std::snprintf(hit, sizeof(hit), "%s@0x%02X[r%02X]=0x%02X(spd%u) ", label, addr, reg, val, speed);
+        std::string s;
+        for(int i = 0; i < max_len && buf[i] != 0x00 && buf[i] != 0xFF; i++)
+        {
+            if(buf[i] >= 0x20 && buf[i] <= 0x7E)
+            {
+                s.push_back(static_cast<char>(buf[i]));
+            }
+        }
+        return s;
+    };
+
+    auto record_hit = [&](const char* route_lbl, uint32_t mask, uint8_t is_ddc, uint8_t port, uint32_t set, uint32_t speed, bool use_ex, uint8_t addr, uint8_t reg, uint8_t val, int proto, const std::string& fw_hint)
+    {
+        char hit[112] = {};
+        if(!fw_hint.empty())
+        {
+            std::snprintf(hit, sizeof(hit), "%s(m%u)@0x%02X[r%02X=%s] ", route_lbl, mask, addr, reg, fw_hint.c_str());
+        }
+        else
+        {
+            std::snprintf(hit, sizeof(hit), "%s(m%u)@0x%02X[r%02X=0x%02X] ", route_lbl, mask, addr, reg, val);
+        }
         found += hit;
 
-        if(!adopted && (addr == 0x4B || addr == ZOTAC_SPECTRA_I2C_ADDR || (addr >= 0x48 && addr <= 0x4F)))
+        if(!adopted && (addr == 0x4A || addr == 0x4B || addr == 0x49 || addr == ZOTAC_SPECTRA_I2C_ADDR || (addr >= 0x48 && addr <= 0x4F)))
         {
             active_i2c_addr     = addr;
+            active_display_mask = mask;
+            active_is_ddc       = is_ddc;
             active_port_id      = port;
             active_port_set     = set;
             active_speed_khz    = speed;
-            use_blackwell_proto = is_bw || (addr == 0x4B);
+            active_use_ex_api   = use_ex;
+            active_proto        = proto;
             adopted             = true;
-
-            if(addr == 0x4B)
+            if(!fw_hint.empty())
             {
-                uint8_t fw[33] = {};
-                if(nv.ReadReg(0x4B, 0xF0, true, fw, 32u, port, set, speed) == 0)
-                {
-                    std::string clean;
-                    for(int i = 0; i < 32 && fw[i] != 0x00 && fw[i] != 0xFF; i++)
-                    {
-                        if(fw[i] >= 0x20 && fw[i] <= 0x7E) clean.push_back(static_cast<char>(fw[i]));
-                    }
-                    if(!clean.empty())
-                    {
-                        detected_fw_version = clean;
-                    }
-                }
+                detected_fw_version = fw_hint;
             }
         }
     };
 
-    struct PortScan { uint8_t port; uint32_t set; const char* label; };
-    const PortScan ports[] = {
-        { 1, 1, "p1" }, // OpenRGB i2c_smbus_nvapi default
-        { 0, 1, "p0" },
-        { 2, 1, "p2" },
-        { 3, 1, "p3" },
-        { 0, 0, "auto" },
-    };
-    const uint32_t speeds[] = { 0u, 4u }; // DEFAULT (0) then 100KHZ (4)
-    const uint8_t  addrs[]  = { 0x4B, 0x49, 0x4A, 0x48, 0x4C, 0x4D, 0x4E, 0x4F, 0x20, 0x29, 0x60, 0x68, 0x6A, 0x70 };
-    const uint8_t  regs[]   = { 0x10, 0xF0, 0x00 };
-
-    for(uint32_t spd : speeds)
+    struct RouteScan
     {
-        for(const auto& p : ports)
+        const char* label;
+        bool        use_ex;
+        uint8_t     is_ddc;
+        uint8_t     port;
+        uint32_t    set;
+        uint32_t    speed;
+    };
+    const RouteScan routes[] = {
+        { "ddc10k", false, 1, 1, 1, 2u }, // Zotac4A / FireStorm 0x4A route
+        { "ddc100k", false, 1, 1, 1, 4u }, // FireStorm 0x4B Blackwell route
+        { "ddcDef", false, 1, 1, 1, 0u },
+        { "exDef",  true,  0, 1, 1, 0u }, // OpenRGB i2c_smbus_nvapi default route
+        { "ex100k", true,  0, 1, 1, 4u },
+        { "exP0",   true,  0, 0, 1, 0u },
+    };
+
+    const uint8_t extra_addrs[] = { 0x49, 0x48, 0x4C, 0x4D, 0x4E, 0x4F, 0x20, 0x29, 0x60, 0x68, 0x6A, 0x70 };
+
+    for(const auto& rt : routes)
+    {
+        std::vector<uint32_t> masks;
+        if(rt.is_ddc)
         {
-            for(uint8_t addr : addrs)
+            for(uint32_t m : nv.display_masks)
             {
-                for(uint8_t reg : regs)
+                if(m != 0u) masks.push_back(m);
+            }
+            if(masks.empty()) masks.push_back(1u);
+        }
+        else
+        {
+            masks.push_back(0u);
+        }
+
+        for(uint32_t mask : masks)
+        {
+            // 1) Zotac 4A signature (0x4A reg 0x5A, 32 bytes)
+            uint8_t blk[33] = {};
+            int rc4a = nv.ReadI2C(0x4A, 0x5A, true, blk, 32u, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex);
+            last_rc = rc4a;
+            if(rc4a == 0)
+            {
+                std::string fw = extract_ascii(blk, 10);
+                record_hit(rt.label, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex, 0x4A, 0x5A, blk[0], ZOTAC_PROTO_4A, fw);
+            }
+
+            // 2) Zotac Blackwell signature (0x4B reg 0xF0 32 bytes, or reg 0x10 1 byte)
+            std::memset(blk, 0, sizeof(blk));
+            int rcbw_fw = nv.ReadI2C(0x4B, 0xF0, true, blk, 32u, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex);
+            if(rcbw_fw == 0)
+            {
+                std::string fw = extract_ascii(blk, 16);
+                record_hit(rt.label, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex, 0x4B, 0xF0, blk[0], ZOTAC_PROTO_BLACKWELL, fw);
+            }
+            else
+            {
+                uint8_t val = 0;
+                int rcbw = nv.ReadI2C(0x4B, 0x10, true, &val, 1u, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex);
+                last_rc = rcbw;
+                if(rcbw == 0)
                 {
-                    uint8_t val = 0;
-                    int rc = nv.ReadReg(addr, reg, true, &val, 1u, p.port, p.set, spd);
-                    last_rc = rc;
-                    if(rc == 0)
-                    {
-                        record_hit(p.label, p.port, p.set, spd, addr, reg, val, (addr == 0x4B || reg == 0x10 || reg == 0xF0));
-                        break;
-                    }
+                    record_hit(rt.label, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex, 0x4B, 0x10, val, ZOTAC_PROTO_BLACKWELL, "");
                 }
             }
+
+            // 3) Secondary ZOTAC addresses
+            for(uint8_t addr : extra_addrs)
+            {
+                uint8_t val = 0;
+                int rc = nv.ReadI2C(addr, 0x00, true, &val, 1u, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex);
+                if(rc == 0)
+                {
+                    record_hit(rt.label, mask, rt.is_ddc, rt.port, rt.set, rt.speed, rt.use_ex, addr, 0x00, val, ZOTAC_PROTO_V2, "");
+                }
+            }
+
+            if(adopted) break;
         }
-        if(!found.empty()) break;
+        if(adopted) break;
     }
 
-    // If nothing matched in quick ZOTAC list, sweep full 7-bit range 0x08..0x77 on port 1 (DEFAULT speed) + check EDID 0x50
+    // If quick list missed, sweep full 7-bit 0x08..0x77 on BOTH DDC(mask=first, spd=10k) and Ex(mask=0, spd=0)
     if(found.empty())
     {
+        uint32_t first_ddc_mask = 1u;
+        for(uint32_t m : nv.display_masks)
+        {
+            if(m != 0u) { first_ddc_mask = m; break; }
+        }
+
         for(uint8_t addr = 0x08; addr <= 0x77; addr++)
         {
+            uint8_t blk[32] = {};
             uint8_t val = 0;
-            int rc = nv.ReadReg(addr, 0x10, true, &val, 1u, 1, 1, 0u);
-            if(rc != 0) rc = nv.ReadReg(addr, 0x00, true, &val, 1u, 1, 1, 0u);
-            if(rc != 0) rc = nv.ReadReg(addr, 0x00, false, &val, 1u, 1, 1, 0u);
+            if(nv.ReadI2C(addr, 0x5A, true, blk, 32u, first_ddc_mask, 1, 1, 1, 2u, false) == 0)
+            {
+                record_hit("swp-ddc", first_ddc_mask, 1, 1, 1, 2u, false, addr, 0x5A, blk[0], (addr == 0x4B) ? ZOTAC_PROTO_BLACKWELL : ZOTAC_PROTO_4A, extract_ascii(blk, 10));
+                continue;
+            }
+            if(nv.ReadI2C(addr, 0x00, true, &val, 1u, first_ddc_mask, 1, 1, 1, 2u, false) == 0)
+            {
+                record_hit("swp-ddc", first_ddc_mask, 1, 1, 1, 2u, false, addr, 0x00, val, (addr == 0x4B) ? ZOTAC_PROTO_BLACKWELL : ZOTAC_PROTO_4A, "");
+                continue;
+            }
+            int rc = nv.ReadI2C(addr, 0x10, true, &val, 1u, 0u, 0, 1, 1, 0u, true);
+            if(rc != 0) rc = nv.ReadI2C(addr, 0x00, true, &val, 1u, 0u, 0, 1, 1, 0u, true);
             last_rc = rc;
             if(rc == 0)
             {
-                record_hit("sweep-p1", 1, 1, 0u, addr, 0x00, val, addr == 0x4B);
+                record_hit("swp-ex", 0u, 0, 1, 1, 0u, true, addr, 0x00, val, (addr == 0x4B) ? ZOTAC_PROTO_BLACKWELL : ZOTAC_PROTO_V2, "");
             }
         }
     }
 
-    char header[160] = {};
+    char header[192] = {};
     if(!detected_fw_version.empty())
     {
         std::snprintf(header, sizeof(header), "PCI=0x%08X Sub=0x%08X FW=%s | ", nv.pci_dev, nv.pci_sub, detected_fw_version.c_str());
@@ -730,14 +960,20 @@ std::string OpenRGBZotac5070TiPlugin::ScanNVAPIBus()
         return std::string(header) + "ACKs: " + found;
     }
 
+    uint32_t ddc_mask = 1u;
+    for(uint32_t m : nv.display_masks)
+    {
+        if(m != 0u) { ddc_mask = m; break; }
+    }
     uint8_t edid_b = 0;
-    int ddc_rc = nv.ReadReg(0x50, 0x00, true, &edid_b, 1u, 1, 1, 0u, 1);
-    char fail_buf[160] = {};
+    int ddc_rc = nv.ReadI2C(0x50, 0x00, true, &edid_b, 1u, ddc_mask, 1, 1, 1, 2u, false);
+    char fail_buf[192] = {};
     std::snprintf(
         fail_buf,
         sizeof(fail_buf),
-        "No ACK on 0x4B or 0x08-0x77 (last rc=%d, DDC@0x50 rc=%d). Exit FireStorm/overlays & run OpenRGB as Admin.",
+        "No ACK on 0x4A/0x4B or 0x08-0x77 (last rc=%d, DDC@0x50 m%u rc=%d). Exit FireStorm & run OpenRGB as Admin.",
         last_rc,
+        ddc_mask,
         ddc_rc
     );
     return std::string(header) + fail_buf;
@@ -783,17 +1019,22 @@ void OpenRGBZotac5070TiPlugin::ScanAndRegisterZotacGPU()
     }
 
     std::string scan_note = ScanNVAPIBus();
+    const char* proto_name = (active_proto == ZOTAC_PROTO_4A)
+        ? "Zotac 4A (0x5A)"
+        : (active_proto == ZOTAC_PROTO_BLACKWELL ? "Blackwell (0x20-0x2F)" : "SPECTRA V2");
+
     if(WriteColorNVAPI(last_r, last_g, last_b))
     {
         detected = true;
-        char ok_buf[320] = {};
+        char ok_buf[360] = {};
         std::snprintf(
             ok_buf,
             sizeof(ok_buf),
-            "NVAPI Bridge active on 0x%02X (%s, port %u, spd %u). %s",
+            "NVAPI Bridge active on 0x%02X (%s, m%u ddc=%u spd=%u). %s",
             active_i2c_addr,
-            use_blackwell_proto ? "Blackwell 0x20-0x2F" : "SPECTRA V2",
-            active_port_id,
+            proto_name,
+            active_display_mask,
+            active_is_ddc,
             active_speed_khz,
             scan_note.c_str()
         );
@@ -833,7 +1074,7 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
     QHBoxLayout* cfg_row = new QHBoxLayout();
     QLabel* addr_lbl = new QLabel("I2C Addr:");
     QComboBox* addr_box = new QComboBox();
-    const uint8_t addr_choices[] = { 0x4B, 0x49, 0x4A, 0x48, 0x4C, 0x4E, 0x68, 0x6A, 0x29 };
+    const uint8_t addr_choices[] = { 0x4A, 0x4B, 0x49, 0x48, 0x4C, 0x4E, 0x68, 0x6A, 0x29 };
     for(uint8_t a : addr_choices)
     {
         addr_box->addItem(QString("0x%1").arg(a, 2, 16, QChar('0')).toUpper(), static_cast<int>(a));
@@ -846,9 +1087,23 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
 
     QLabel* proto_lbl = new QLabel("Protocol:");
     QComboBox* proto_box = new QComboBox();
-    proto_box->addItem("Blackwell MCU (0x20-0x2F)", true);
-    proto_box->addItem("SPECTRA V2 (0x0F)", false);
-    proto_box->setCurrentIndex(use_blackwell_proto ? 0 : 1);
+    proto_box->addItem("Zotac 4A Block (0x5A · SOLID)", ZOTAC_PROTO_4A);
+    proto_box->addItem("Blackwell MCU (0x20-0x2F)", ZOTAC_PROTO_BLACKWELL);
+    proto_box->addItem("SPECTRA V2 (0x0F)", ZOTAC_PROTO_V2);
+    int initial_proto_idx = proto_box->findData(active_proto);
+    if(initial_proto_idx >= 0)
+    {
+        proto_box->setCurrentIndex(initial_proto_idx);
+    }
+
+    auto sync_combos = [this, addr_box, proto_box]() {
+        QSignalBlocker b1(addr_box);
+        QSignalBlocker b2(proto_box);
+        int aidx = addr_box->findData(static_cast<int>(active_i2c_addr));
+        if(aidx >= 0) addr_box->setCurrentIndex(aidx);
+        int pidx = proto_box->findData(active_proto);
+        if(pidx >= 0) proto_box->setCurrentIndex(pidx);
+    };
 
     QObject::connect(addr_box, QOverload<int>::of(&QComboBox::currentIndexChanged), [this, addr_box, state_label](int idx) {
         if(idx >= 0)
@@ -856,8 +1111,8 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
             active_i2c_addr = static_cast<uint8_t>(addr_box->itemData(idx).toInt());
             if(WriteColorNVAPI(last_r, last_g, last_b))
             {
-                state_label->setText(QString("Switched to I2C 0x%1 (port %2) — write ACKed.")
-                    .arg(active_i2c_addr, 2, 16, QChar('0')).toUpper().arg(active_port_id));
+                state_label->setText(QString("Switched to I2C 0x%1 (m%2) — write ACKed.")
+                    .arg(active_i2c_addr, 2, 16, QChar('0')).toUpper().arg(active_display_mask));
             }
             else
             {
@@ -868,11 +1123,22 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
         }
     });
 
-    QObject::connect(proto_box, QOverload<int>::of(&QComboBox::currentIndexChanged), [this, proto_box](int idx) {
+    QObject::connect(proto_box, QOverload<int>::of(&QComboBox::currentIndexChanged), [this, proto_box, state_label](int idx) {
         if(idx >= 0)
         {
-            use_blackwell_proto = proto_box->itemData(idx).toBool();
-            WriteColorNVAPI(last_r, last_g, last_b);
+            active_proto = proto_box->itemData(idx).toInt();
+            if(active_proto == ZOTAC_PROTO_4A)
+            {
+                active_speed_khz = 2u;
+                active_is_ddc = 1;
+                if(active_display_mask == 0u) active_display_mask = 1u;
+                active_use_ex_api = false;
+            }
+            if(WriteColorNVAPI(last_r, last_g, last_b))
+            {
+                state_label->setText(QString("Protocol updated on 0x%1 — write ACKed.")
+                    .arg(active_i2c_addr, 2, 16, QChar('0')).toUpper());
+            }
         }
     });
 
@@ -908,9 +1174,9 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
             last_b = static_cast<unsigned char>(chosen.blue());
             if(WriteColorNVAPI(last_r, last_g, last_b))
             {
-                state_label->setText(QString("Applied RGB(%1, %2, %3) via NVAPI I2C 0x%4 (port %5).")
+                state_label->setText(QString("Applied RGB(%1, %2, %3) via NVAPI I2C 0x%4 (m%5).")
                     .arg(last_r).arg(last_g).arg(last_b)
-                    .arg(active_i2c_addr, 2, 16, QChar('0')).toUpper().arg(active_port_id));
+                    .arg(active_i2c_addr, 2, 16, QChar('0')).toUpper().arg(active_display_mask));
             }
             else
             {
@@ -921,11 +1187,9 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
         }
     });
 
-    QObject::connect(rescan_btn, &QPushButton::clicked, [this, state_label, addr_box, proto_box]() {
+    QObject::connect(rescan_btn, &QPushButton::clicked, [this, state_label, sync_combos]() {
         ScanAndRegisterZotacGPU();
-        int idx = addr_box->findData(static_cast<int>(active_i2c_addr));
-        if(idx >= 0) addr_box->setCurrentIndex(idx);
-        proto_box->setCurrentIndex(use_blackwell_proto ? 0 : 1);
+        sync_combos();
         if(mirror_active)
         {
             SyncFromOpenRGBDevices();
@@ -933,11 +1197,9 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
         state_label->setText(QString::fromStdString(status_line));
     });
 
-    QObject::connect(bus_scan_btn, &QPushButton::clicked, [this, state_label, addr_box, proto_box]() {
+    QObject::connect(bus_scan_btn, &QPushButton::clicked, [this, state_label, sync_combos]() {
         std::string scan_res = ScanNVAPIBus();
-        int idx = addr_box->findData(static_cast<int>(active_i2c_addr));
-        if(idx >= 0) addr_box->setCurrentIndex(idx);
-        proto_box->setCurrentIndex(use_blackwell_proto ? 0 : 1);
+        sync_combos();
         state_label->setText(QString::fromStdString(scan_res));
     });
 

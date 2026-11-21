@@ -27,26 +27,24 @@ void Zotac5070TiController::SetZoneColor(
     uint8_t brightness
 )
 {
-    uint8_t bw_mode = 0x01; // Static
+    (void)zone;
+    uint8_t mode_4a = 0x00; // Static
+    uint8_t is_on   = (mode == ZOTAC_5070TI_MODE_OFF) ? 0x00 : 0x01;
     switch(mode)
     {
-        case ZOTAC_5070TI_MODE_BREATHING:   bw_mode = 0x02; break;
-        case ZOTAC_5070TI_MODE_COLOR_CYCLE: bw_mode = 0x03; break;
-        case ZOTAC_5070TI_MODE_RAINBOW:     bw_mode = 0x09; break; // Prism
-        default:                            bw_mode = 0x01; break;
+        case ZOTAC_5070TI_MODE_BREATHING:   mode_4a = 0x01; break;
+        case ZOTAC_5070TI_MODE_COLOR_CYCLE: mode_4a = 0x02; break;
+        case ZOTAC_5070TI_MODE_RAINBOW:     mode_4a = 0x04; break;
+        default:                            mode_4a = 0x00; break;
     }
-    uint8_t bw_brt = (mode == ZOTAC_5070TI_MODE_OFF) ? 0 : brightness;
-    uint8_t regs[16] =
+    uint8_t spd_byte = static_cast<uint8_t>((speed * 0xFE) / 10);
+    uint8_t on_time  = (mode_4a == 0x00) ? 45 : static_cast<uint8_t>(0xFE - spd_byte);
+    uint8_t data_pkt[32] =
     {
-        0x00, zone, bw_mode, r, g, b, 0x00, 0x00, 0x00, bw_brt, speed, 0x00, 0x00, 0x00, 0x00, 0x00
+        0x00, is_on, mode_4a, r, g, b, on_time, 10, 0x08
     };
-    for(int i = 0; i < 16; i++)
-    {
-        bus->i2c_smbus_write_byte_data(dev, static_cast<uint8_t>(0x20 + i), regs[i]);
-        std::this_thread::sleep_for(std::chrono::microseconds(3000));
-    }
-    bus->i2c_smbus_write_byte_data(dev, 0x17, 0x01);
-    std::this_thread::sleep_for(std::chrono::microseconds(10000));
+    bus->i2c_smbus_write_i2c_block_data(dev, 0x5A, sizeof(data_pkt), data_pkt);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 }
 
 RGBController_Zotac5070Ti::RGBController_Zotac5070Ti(Zotac5070TiController* controller_ptr)

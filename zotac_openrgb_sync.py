@@ -7,12 +7,14 @@ import sys
 import time
 from openrgb import OpenRGBClient
 
-I2C_ADDR_7BIT = 0x4B
+I2C_ADDR_7BIT = 0x4A
 POLL_INTERVAL_SEC = 0.05
 
 # NVAPI constants (Windows x64 nvapi64.dll)
 NVAPI_QUERY_INTERFACE_ID_ENUM_GPUS = 0xE5AC921F
+NVAPI_QUERY_INTERFACE_ID_I2C_WRITE = 0xE812EB07
 NVAPI_QUERY_INTERFACE_ID_I2C_WRITE_EX = 0x283AC65A
+USE_ZOTAC_4A = True
 
 
 class NvI2CInfoV3(ctypes.Structure):
@@ -40,7 +42,8 @@ def init_nvapi():
 
     init_ptr = query_iface(0x0150E828)
     enum_ptr = query_iface(NVAPI_QUERY_INTERFACE_ID_ENUM_GPUS)
-    write_ptr = query_iface(NVAPI_QUERY_INTERFACE_ID_I2C_WRITE_EX)
+    write_ptr = query_iface(NVAPI_QUERY_INTERFACE_ID_I2C_WRITE)
+    write_ex_ptr = query_iface(NVAPI_QUERY_INTERFACE_ID_I2C_WRITE_EX)
 
     init_fn = ctypes.CFUNCTYPE(ctypes.c_int)(init_ptr)
     if init_fn() != 0:
@@ -53,11 +56,30 @@ def init_nvapi():
     if count.value == 0:
         raise RuntimeError("No NVIDIA GPU found via NVAPI.")
 
-    write_fn = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(NvI2CInfoV3), ctypes.POINTER(ctypes.c_uint32))(write_ptr)
-    return handles[0], write_fn
+    write_fn = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(NvI2CInfoV3))(write_ptr)
+    write_ex_fn = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(NvI2CInfoV3), ctypes.POINTER(ctypes.c_uint32))(write_ex_ptr)
+    return handles[0], write_fn, write_ex_fn
 
 
-def write_zotac_color(gpu_handle, write_fn, r, g, b):
+def write_zotac_color(gpu_handle, write_fn, write_ex_fn, r, g, b):
+    if USE_ZOTAC_4A:
+        reg = (ctypes.c_uint8 * 1)(0x5A)
+        pkt = (ctypes.c_uint8 * 32)(0x00, 0x01, 0x00, r, g, b, 45, 10, 0x08)
+        info = NvI2CInfoV3()
+        info.version = ctypes.sizeof(NvI2CInfoV3) | (3 << 16)
+        info.displayMask = 1
+        info.bIsDDCPort = 1
+        info.i2cDevAddress = (I2C_ADDR_7BIT << 1)
+        info.pbI2cRegAddress = reg
+        info.regAddrSize = 1
+        info.pbData = pkt
+        info.cbSize = 32
+        info.i2cSpeed = 0xFFFF
+        info.i2cSpeedKhz = 2  # NVAPI_I2C_SPEED_10KHZ
+        info.portId = 1
+        info.bIsPortIdSet = 1
+        return write_fn(gpu_handle, ctypes.byref(info))
+
     regs = [0x00, 0x00, 0x01, r, g, b, 0x00, 0x00, 0x00, 100, 20, 0x00, 0x00, 0x00, 0x00, 0x00]
     for z in range(2):
         regs[1] = z
@@ -66,19 +88,24 @@ def write_zotac_color(gpu_handle, write_fn, r, g, b):
             payload = (ctypes.c_uint8 * 1)(val)
             info = NvI2CInfoV3()
             info.version = ctypes.sizeof(NvI2CInfoV3) | (3 << 16)
-            info.displayMask = 0
-            info.bIsDDCPort = 0
+            info.displayMask = 1
+            info.bIsDDCPort = 1
             info.i2cDevAddress = (I2C_ADDR_7BIT << 1)
             info.pbI2cRegAddress = reg
             info.regAddrSize = 1
             info.pbData = payload
             info.cbSize = 1
             info.i2cSpeed = 0xFFFF
-            info.i2cSpeedKhz = 0  # NVAPI_I2C_SPEED_DEFAULT (matches OpenRGB i2c_smbus_nvapi)
+            info.i2cSpeedKhz = 4  # NVAPI_I2C_SPEED_100KHZ
             info.portId = 1
             info.bIsPortIdSet = 1
-            unknown = (ctypes.c_uint32 * 1)(0)
-            rc = write_fn(gpu_handle, ctypes.byref(info), unknown)
+            rc = write_fn(gpu_handle, ctypes.byref(info))
+            if rc != 0:
+                unknown = (ctypes.c_uint32 * 1)(0)
+                info.displayMask = 0
+                info.bIsDDCPort = 0
+                info.i2cSpeedKhz = 0
+                rc = write_ex_fn(gpu_handle, ctypes.byref(info), unknown)
             if rc != 0:
                 return rc
             time.sleep(0.003)
@@ -87,18 +114,24 @@ def write_zotac_color(gpu_handle, write_fn, r, g, b):
         val_commit = (ctypes.c_uint8 * 1)(0x01)
         info = NvI2CInfoV3()
         info.version = ctypes.sizeof(NvI2CInfoV3) | (3 << 16)
-        info.bIsDDCPort = 0
+        info.displayMask = 1
+        info.bIsDDCPort = 1
         info.i2cDevAddress = (I2C_ADDR_7BIT << 1)
         info.pbI2cRegAddress = reg_commit
         info.regAddrSize = 1
         info.pbData = val_commit
         info.cbSize = 1
         info.i2cSpeed = 0xFFFF
-        info.i2cSpeedKhz = 0
+        info.i2cSpeedKhz = 4
         info.portId = 1
         info.bIsPortIdSet = 1
-        unknown = (ctypes.c_uint32 * 1)(0)
-        rc = write_fn(gpu_handle, ctypes.byref(info), unknown)
+        rc = write_fn(gpu_handle, ctypes.byref(info))
+        if rc != 0:
+            unknown = (ctypes.c_uint32 * 1)(0)
+            info.displayMask = 0
+            info.bIsDDCPort = 0
+            info.i2cSpeedKhz = 0
+            rc = write_ex_fn(gpu_handle, ctypes.byref(info), unknown)
         if rc != 0:
             return rc
         time.sleep(0.01)
@@ -109,7 +142,7 @@ def main():
     if sys.platform != "win32":
         print("nvapi64.dll sync bridge is Windows-only.")
         return
-    gpu_handle, write_fn = init_nvapi()
+    gpu_handle, write_fn, write_ex_fn = init_nvapi()
     client = OpenRGBClient()
     if not client.devices:
         print("No OpenRGB devices found to mirror.")
@@ -124,7 +157,7 @@ def main():
             c = source_dev.colors[0]
             rgb = (c.red, c.green, c.blue)
             if rgb != last_rgb:
-                write_zotac_color(gpu_handle, write_fn, *rgb)
+                write_zotac_color(gpu_handle, write_fn, write_ex_fn, *rgb)
                 last_rgb = rgb
         time.sleep(POLL_INTERVAL_SEC)
 

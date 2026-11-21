@@ -7,6 +7,13 @@
 #include <string>
 #include "OpenRGBPluginInterface.h"
 
+enum ZotacProto
+{
+    ZOTAC_PROTO_4A        = 0,
+    ZOTAC_PROTO_BLACKWELL = 1,
+    ZOTAC_PROTO_V2        = 2
+};
+
 class OpenRGBZotac5070TiPlugin : public QObject, public OpenRGBPluginInterface
 {
     Q_OBJECT
@@ -45,12 +52,15 @@ private:
     unsigned char              last_r = 56;
     unsigned char              last_g = 189;
     unsigned char              last_b = 248;
-    uint8_t                    active_i2c_addr = 0x4B;
+    uint8_t                    active_i2c_addr = 0x4A;
+    uint32_t                   active_display_mask = 1u;
+    uint8_t                    active_is_ddc = 1;
     uint8_t                    active_port_id = 1;
     uint32_t                   active_port_set = 1;
-    uint32_t                   active_speed_khz = 0; // NVAPI_I2C_SPEED_DEFAULT (matches OpenRGB i2c_smbus_nvapi)
+    uint32_t                   active_speed_khz = 2u;
+    bool                       active_use_ex_api = false;
     bool                       active_reg_split = true;
-    bool                       use_blackwell_proto = true;
+    int                        active_proto = ZOTAC_PROTO_4A;
     bool                       has_applied_color = false;
     int                        last_nvapi_status = 0;
     std::string                last_nvapi_error;
