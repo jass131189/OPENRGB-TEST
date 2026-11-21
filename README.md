@@ -3,7 +3,7 @@
 ## Target Hardware Profile
 - PCI Vendor / Device: 0x10DE:0x2C05 (NVIDIA GeForce RTX 5070 Ti, GB203)
 - PCI Subsystem: 0x19DA:0x2765 (ZOTAC)
-- I2C Address: 0x49
+- I2C Address: 0x4B
 - Zones: Side Lightbar, SPECTRA Emblem
 
 ## Option A — Cloud Build the .dll via GitHub Actions (No Local Visual Studio / Qt Required)

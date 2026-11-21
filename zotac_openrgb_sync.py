@@ -7,7 +7,7 @@ import sys
 import time
 from openrgb import OpenRGBClient
 
-I2C_ADDR_7BIT = 0x49
+I2C_ADDR_7BIT = 0x4B
 POLL_INTERVAL_SEC = 0.05
 
 # NVAPI constants (Windows x64 nvapi64.dll)
@@ -58,23 +58,51 @@ def init_nvapi():
 
 
 def write_zotac_color(gpu_handle, write_fn, r, g, b):
-    payload = (ctypes.c_uint8 * 10)(0x0F, 0x00, 0x00, 0x00, r, g, b, 0x05, 0xFF, 0x01)
-    reg = (ctypes.c_uint8 * 1)(0x0F)
-    info = NvI2CInfoV3()
-    info.version = ctypes.sizeof(NvI2CInfoV3) | (3 << 16)
-    info.displayMask = 0
-    info.bIsDDCPort = 0
-    info.i2cDevAddress = (I2C_ADDR_7BIT << 1)
-    info.pbI2cRegAddress = reg
-    info.regAddrSize = 1
-    info.pbData = payload
-    info.cbSize = 10
-    info.i2cSpeed = 0xFFFF
-    info.i2cSpeedKhz = 100
-    info.portId = 1
-    info.bIsPortIdSet = 1
-    unknown = ctypes.c_uint32(0)
-    return write_fn(gpu_handle, ctypes.byref(info), ctypes.byref(unknown))
+    regs = [0x00, 0x00, 0x01, r, g, b, 0x00, 0x00, 0x00, 100, 20, 0x00, 0x00, 0x00, 0x00, 0x00]
+    for z in range(2):
+        regs[1] = z
+        for idx, val in enumerate(regs):
+            reg = (ctypes.c_uint8 * 1)(0x20 + idx)
+            payload = (ctypes.c_uint8 * 1)(val)
+            info = NvI2CInfoV3()
+            info.version = ctypes.sizeof(NvI2CInfoV3) | (3 << 16)
+            info.displayMask = 0
+            info.bIsDDCPort = 0
+            info.i2cDevAddress = (I2C_ADDR_7BIT << 1)
+            info.pbI2cRegAddress = reg
+            info.regAddrSize = 1
+            info.pbData = payload
+            info.cbSize = 1
+            info.i2cSpeed = 0xFFFF
+            info.i2cSpeedKhz = 0  # NVAPI_I2C_SPEED_DEFAULT (matches OpenRGB i2c_smbus_nvapi)
+            info.portId = 1
+            info.bIsPortIdSet = 1
+            unknown = (ctypes.c_uint32 * 1)(0)
+            rc = write_fn(gpu_handle, ctypes.byref(info), unknown)
+            if rc != 0:
+                return rc
+            time.sleep(0.003)
+
+        reg_commit = (ctypes.c_uint8 * 1)(0x17)
+        val_commit = (ctypes.c_uint8 * 1)(0x01)
+        info = NvI2CInfoV3()
+        info.version = ctypes.sizeof(NvI2CInfoV3) | (3 << 16)
+        info.bIsDDCPort = 0
+        info.i2cDevAddress = (I2C_ADDR_7BIT << 1)
+        info.pbI2cRegAddress = reg_commit
+        info.regAddrSize = 1
+        info.pbData = val_commit
+        info.cbSize = 1
+        info.i2cSpeed = 0xFFFF
+        info.i2cSpeedKhz = 0
+        info.portId = 1
+        info.bIsPortIdSet = 1
+        unknown = (ctypes.c_uint32 * 1)(0)
+        rc = write_fn(gpu_handle, ctypes.byref(info), unknown)
+        if rc != 0:
+            return rc
+        time.sleep(0.01)
+    return 0
 
 
 def main():

@@ -45,13 +45,15 @@ private:
     unsigned char              last_r = 56;
     unsigned char              last_g = 189;
     unsigned char              last_b = 248;
-    uint8_t                    active_i2c_addr = 0x49;
+    uint8_t                    active_i2c_addr = 0x4B;
     uint8_t                    active_port_id = 1;
     uint32_t                   active_port_set = 1;
-    uint32_t                   active_speed_khz = 4;
+    uint32_t                   active_speed_khz = 0; // NVAPI_I2C_SPEED_DEFAULT (matches OpenRGB i2c_smbus_nvapi)
     bool                       active_reg_split = true;
-    bool                       use_blackwell_proto = false;
+    bool                       use_blackwell_proto = true;
+    bool                       has_applied_color = false;
     int                        last_nvapi_status = 0;
     std::string                last_nvapi_error;
+    std::string                detected_fw_version;
     std::string                status_line;
 };

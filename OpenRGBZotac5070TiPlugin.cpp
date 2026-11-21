@@ -35,7 +35,7 @@
 #define NVIDIA_RTX5070TI_DEV        0x2C05
 #define ZOTAC_SUB_VEN               0x19DA
 #define ZOTAC_RTX5070TI_SUB_DEV     0x2765
-#define ZOTAC_SPECTRA_I2C_ADDR      0x49
+#define ZOTAC_SPECTRA_I2C_ADDR      0x4B
 #define ZOTAC_ZONE_COUNT            2
 #define ZOTAC_WILDCARD_SUBDEV       false
 
@@ -149,7 +149,7 @@ namespace
                     unsigned char ping_pkt[2] = { 0x00, 0x00 };
                     if(bus->i2c_smbus_write_i2c_block_data(ZOTAC_SPECTRA_I2C_ADDR, 0x00, 2, ping_pkt) < 0)
                     {
-                        out_status = "Matched PCI ID on I2C bus, but address 0x49 did not ACK (close ZOTAC FireStorm).";
+                        out_status = "Matched PCI ID on I2C bus, but address 0x4B did not ACK (close ZOTAC FireStorm).";
                         continue;
                     }
                 }
@@ -159,7 +159,7 @@ namespace
                 rgb_controller->name = "ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC";
 
                 mgr->RegisterRGBController(rgb_controller);
-                out_status = "Registered ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC on native OpenRGB I2C address 0x49.";
+                out_status = "Registered ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC on native OpenRGB I2C address 0x4B.";
                 return true;
             }
         }
@@ -249,7 +249,6 @@ namespace
     }
 
 #ifdef _WIN32
-#pragma pack(push, 8)
     struct NvI2CInfoV3
     {
         uint32_t version;
@@ -265,7 +264,177 @@ namespace
         uint8_t  portId;
         uint32_t bIsPortIdSet;
     };
-#pragma pack(pop)
+
+    struct NvapiSession
+    {
+        using QueryInterfaceFn = void* (__cdecl*)(uint32_t);
+        using NvInitFn         = int (__cdecl*)();
+        using NvEnumGpusFn     = int (__cdecl*)(void**, int32_t*);
+        using NvGetPciFn       = int (__cdecl*)(void*, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
+        using NvI2CWriteExFn   = int (__cdecl*)(void*, NvI2CInfoV3*, uint32_t*);
+        using NvI2CReadExFn    = int (__cdecl*)(void*, NvI2CInfoV3*, uint32_t*);
+        using NvGetErrMsgFn    = int (__cdecl*)(int, char*);
+
+        HMODULE        mod       = nullptr;
+        bool           init_ok   = false;
+        void*          gpu       = nullptr;
+        uint32_t       pci_dev   = 0;
+        uint32_t       pci_sub   = 0;
+        int            init_rc   = 0;
+        std::string    err_note;
+
+        NvInitFn       init_fn   = nullptr;
+        NvEnumGpusFn   enum_fn   = nullptr;
+        NvGetPciFn     pci_fn    = nullptr;
+        NvI2CWriteExFn write_fn  = nullptr;
+        NvI2CReadExFn  read_fn   = nullptr;
+        NvGetErrMsgFn  err_fn    = nullptr;
+
+        static NvapiSession& Get()
+        {
+            static NvapiSession instance;
+            return instance;
+        }
+
+        bool EnsureReady()
+        {
+            if(init_ok && gpu != nullptr)
+            {
+                return true;
+            }
+            if(mod == nullptr)
+            {
+                mod = LoadLibraryA("nvapi64.dll");
+                if(mod == nullptr)
+                {
+                    err_note = "Failed to load nvapi64.dll";
+                    return false;
+                }
+            }
+
+            auto query = reinterpret_cast<QueryInterfaceFn>(GetProcAddress(mod, "nvapi_QueryInterface"));
+            if(query == nullptr)
+            {
+                err_note = "nvapi_QueryInterface not found";
+                return false;
+            }
+
+            init_fn  = reinterpret_cast<NvInitFn>(query(0x0150E828u));
+            enum_fn  = reinterpret_cast<NvEnumGpusFn>(query(0xE5AC921Fu));
+            pci_fn   = reinterpret_cast<NvGetPciFn>(query(0x2DDFB66Eu));
+            write_fn = reinterpret_cast<NvI2CWriteExFn>(query(0x283AC65Au));
+            read_fn  = reinterpret_cast<NvI2CReadExFn>(query(0x4D7B0709u));
+            err_fn   = reinterpret_cast<NvGetErrMsgFn>(query(0x6C2D048Cu));
+
+            if(init_fn == nullptr || enum_fn == nullptr || write_fn == nullptr || read_fn == nullptr)
+            {
+                err_note = "Required NVAPI I2C entry points unavailable";
+                return false;
+            }
+
+            init_rc = init_fn();
+            if(init_rc != 0)
+            {
+                err_note = "NvAPI_Initialize failed";
+                return false;
+            }
+
+            void*   handles[64] = {};
+            int32_t count       = 0;
+            init_rc = enum_fn(handles, &count);
+            if(init_rc != 0 || count <= 0)
+            {
+                err_note = "No NVIDIA physical GPU handles returned";
+                return false;
+            }
+
+            gpu = handles[0];
+            if(pci_fn != nullptr)
+            {
+                for(int32_t i = 0; i < count; i++)
+                {
+                    uint32_t dev_id = 0, sub_id = 0, rev_id = 0, ext_id = 0;
+                    if(pci_fn(handles[i], &dev_id, &sub_id, &rev_id, &ext_id) == 0)
+                    {
+                        uint32_t ven = dev_id & 0xFFFFu;
+                        uint32_t dev = (dev_id >> 16) & 0xFFFFu;
+                        if(ven == NVIDIA_VEN && dev == NVIDIA_RTX5070TI_DEV)
+                        {
+                            gpu     = handles[i];
+                            pci_dev = dev_id;
+                            pci_sub = sub_id;
+                            break;
+                        }
+                    }
+                }
+                if(pci_dev == 0)
+                {
+                    uint32_t rev_id = 0, ext_id = 0;
+                    pci_fn(gpu, &pci_dev, &pci_sub, &rev_id, &ext_id);
+                }
+            }
+
+            init_ok = true;
+            err_note.clear();
+            return true;
+        }
+
+        int ReadReg(uint8_t addr, uint8_t reg, bool use_reg, uint8_t* out_buf, uint32_t len, uint8_t port_id, uint32_t port_set, uint32_t speed_khz, uint8_t is_ddc = 0)
+        {
+            if(!EnsureReady()) return -1;
+            uint8_t reg_local = reg;
+            NvI2CInfoV3 info = {};
+            info.version         = static_cast<uint32_t>(sizeof(NvI2CInfoV3) | (3u << 16));
+            info.displayMask     = 0;
+            info.bIsDDCPort      = is_ddc;
+            info.i2cDevAddress   = static_cast<uint8_t>(addr << 1);
+            info.pbI2cRegAddress = use_reg ? &reg_local : nullptr;
+            info.regAddrSize     = use_reg ? 1u : 0u;
+            info.pbData          = out_buf;
+            info.cbSize          = len;
+            info.i2cSpeed        = 0xFFFFu;
+            info.i2cSpeedKhz     = speed_khz;
+            info.portId          = port_id;
+            info.bIsPortIdSet    = port_set;
+
+            uint32_t unknown = 0;
+            return read_fn(gpu, &info, &unknown);
+        }
+
+        int WriteReg(uint8_t addr, uint8_t reg, bool use_reg, uint8_t* data_buf, uint32_t len, uint8_t port_id, uint32_t port_set, uint32_t speed_khz)
+        {
+            if(!EnsureReady()) return -1;
+            uint8_t reg_local = reg;
+            NvI2CInfoV3 info = {};
+            info.version         = static_cast<uint32_t>(sizeof(NvI2CInfoV3) | (3u << 16));
+            info.displayMask     = 0;
+            info.bIsDDCPort      = 0;
+            info.i2cDevAddress   = static_cast<uint8_t>(addr << 1);
+            info.pbI2cRegAddress = use_reg ? &reg_local : nullptr;
+            info.regAddrSize     = use_reg ? 1u : 0u;
+            info.pbData          = data_buf;
+            info.cbSize          = len;
+            info.i2cSpeed        = 0xFFFFu;
+            info.i2cSpeedKhz     = speed_khz;
+            info.portId          = port_id;
+            info.bIsPortIdSet    = port_set;
+
+            uint32_t unknown = 0;
+            return write_fn(gpu, &info, &unknown);
+        }
+
+        std::string FormatError(int rc)
+        {
+            char err_buf[64] = {};
+            if(err_fn != nullptr && err_fn(rc, err_buf) == 0 && err_buf[0] != '\0')
+            {
+                return std::string(err_buf);
+            }
+            char code_buf[48] = {};
+            std::snprintf(code_buf, sizeof(code_buf), "NVAPI status %d", rc);
+            return std::string(code_buf);
+        }
+    };
 #endif
 }
 
@@ -298,173 +467,149 @@ void OpenRGBZotac5070TiPlugin::Load(OpenRGBPluginAPIInterface* plugin_api_ptr)
 bool OpenRGBZotac5070TiPlugin::WriteColorNVAPI(unsigned char r, unsigned char g, unsigned char b)
 {
 #ifdef _WIN32
-    HMODULE nvapi = LoadLibraryA("nvapi64.dll");
-    if(nvapi == nullptr)
+    NvapiSession& nv = NvapiSession::Get();
+    if(!nv.EnsureReady())
     {
-        last_nvapi_error = "Failed to load nvapi64.dll";
+        last_nvapi_status = nv.init_rc != 0 ? nv.init_rc : -1;
+        last_nvapi_error  = nv.err_note;
         return false;
     }
 
-    using QueryInterfaceFn = void* (__cdecl*)(uint32_t);
-    using NvInitFn         = int (__cdecl*)();
-    using NvEnumGpusFn     = int (__cdecl*)(void**, uint32_t*);
-    using NvGetPciFn       = int (__cdecl*)(void*, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
-    using NvI2CWriteExFn   = int (__cdecl*)(void*, NvI2CInfoV3*, uint32_t*);
-    using NvGetErrMsgFn    = int (__cdecl*)(int, char*);
-
-    auto query = reinterpret_cast<QueryInterfaceFn>(GetProcAddress(nvapi, "nvapi_QueryInterface"));
-    if(query == nullptr)
+    auto write_blackwell = [&](uint8_t addr, uint8_t port_id, uint32_t port_set, uint32_t speed_khz) -> int
     {
-        last_nvapi_error = "nvapi_QueryInterface not found";
-        FreeLibrary(nvapi);
-        return false;
-    }
-
-    auto init_fn   = reinterpret_cast<NvInitFn>(query(0x0150E828u));
-    auto enum_fn   = reinterpret_cast<NvEnumGpusFn>(query(0xE5AC921Fu));
-    auto pci_fn    = reinterpret_cast<NvGetPciFn>(query(0x2DDFB66Eu));
-    auto write_fn  = reinterpret_cast<NvI2CWriteExFn>(query(0x283AC65Au));
-    auto err_fn    = reinterpret_cast<NvGetErrMsgFn>(query(0x6C2D048Cu));
-
-    if(init_fn == nullptr || enum_fn == nullptr || write_fn == nullptr)
-    {
-        last_nvapi_error = "Required NVAPI I2C entry points unavailable";
-        FreeLibrary(nvapi);
-        return false;
-    }
-
-    int init_rc = init_fn();
-    if(init_rc != 0)
-    {
-        last_nvapi_status = init_rc;
-        last_nvapi_error = "NvAPI_Initialize failed";
-        FreeLibrary(nvapi);
-        return false;
-    }
-
-    void*    handles[64] = {};
-    uint32_t count       = 0;
-    int enum_rc = enum_fn(handles, &count);
-    if(enum_rc != 0 || count == 0)
-    {
-        last_nvapi_status = enum_rc;
-        last_nvapi_error = "No NVIDIA physical GPU handles returned";
-        FreeLibrary(nvapi);
-        return false;
-    }
-
-    void* target_gpu = handles[0];
-    if(pci_fn != nullptr)
-    {
-        for(uint32_t i = 0; i < count; i++)
+        for(uint8_t z = 0; z < ZOTAC_ZONE_COUNT; z++)
         {
-            uint32_t dev_id = 0, sub_id = 0, rev_id = 0, ext_id = 0;
-            if(pci_fn(handles[i], &dev_id, &sub_id, &rev_id, &ext_id) == 0)
+            uint8_t regs[16] = {
+                0x00,                   // 0x20 - Fixed = 0x00
+                z,                      // 0x21 - Zone index
+                0x01,                   // 0x22 - Mode = ZOTAC_BLACKWELL_GPU_MODE_STATIC (0x01)
+                r, g, b,                // 0x23..0x25 - Color 1
+                0x00, 0x00, 0x00,       // 0x26..0x28 - Color 2
+                100,                    // 0x29 - Brightness (0-100)
+                20,                     // 0x2A - Speed (0-100)
+                0x00,                   // 0x2B - Direction Left
+                0x00, 0x00, 0x00, 0x00  // 0x2C..0x2F - Reserved
+            };
+            for(int i = 0; i < 16; i++)
             {
-                uint32_t ven = dev_id & 0xFFFFu;
-                uint32_t dev = (dev_id >> 16) & 0xFFFFu;
-                if(ven == NVIDIA_VEN && dev == NVIDIA_RTX5070TI_DEV)
+                uint8_t val = regs[i];
+                int rc = nv.WriteReg(addr, static_cast<uint8_t>(0x20 + i), true, &val, 1u, port_id, port_set, speed_khz);
+                if(rc != 0)
                 {
-                    target_gpu = handles[i];
-                    break;
+                    return rc;
                 }
+                Sleep(3);
             }
+            uint8_t commit_val = 0x01;
+            int crc = nv.WriteReg(addr, 0x17, true, &commit_val, 1u, port_id, port_set, speed_khz);
+            if(crc != 0)
+            {
+                return crc;
+            }
+            Sleep(10);
         }
-    }
+        return 0;
+    };
 
-    auto try_write = [&](uint8_t port_id, uint32_t port_set, uint32_t speed_khz, bool reg_split, uint32_t ext_flag) -> int
+    auto write_spectra_v2 = [&](uint8_t addr, uint8_t port_id, uint32_t port_set, uint32_t speed_khz, bool reg_split) -> int
     {
-        int last_rc = -1;
         for(uint8_t z = 0; z < ZOTAC_ZONE_COUNT; z++)
         {
             uint8_t v2_pkt[10] = { 0x0F, 0x00, z, 0x00, r, g, b, 0x05, 0xFF, 0x01 };
-            uint8_t bw_pkt[12] = { 0xA0, z, 0x00, 0x05, 100, r, g, b, 0x00, 0x00, 0x00, 0x55 };
-            uint8_t* pkt_ptr   = use_blackwell_proto ? bw_pkt : v2_pkt;
-            uint32_t pkt_len   = use_blackwell_proto ? 12u : 10u;
-
-            uint8_t reg_byte = pkt_ptr[0];
-            NvI2CInfoV3 info {};
-            info.version         = static_cast<uint32_t>(sizeof(NvI2CInfoV3) | (3u << 16));
-            info.displayMask     = 0;
-            info.bIsDDCPort      = 0;
-            info.i2cDevAddress   = static_cast<uint8_t>(active_i2c_addr << 1);
-            info.pbI2cRegAddress = reg_split ? &reg_byte : nullptr;
-            info.regAddrSize     = reg_split ? 1u : 0u;
-            info.pbData          = reg_split ? (pkt_ptr + 1) : pkt_ptr;
-            info.cbSize          = reg_split ? (pkt_len - 1u) : pkt_len;
-            info.i2cSpeed        = 0xFFFFu;
-            info.i2cSpeedKhz     = speed_khz; // NVAPI_I2C_SPEED enum: 4 = 100kHz, 0 = default
-            info.portId          = port_id;
-            info.bIsPortIdSet    = port_set;
-
-            uint32_t ext_data[2] = { ext_flag, 0 };
-            int rc = write_fn(target_gpu, &info, ext_data);
-            last_rc = rc;
+            int rc = nv.WriteReg(
+                addr,
+                v2_pkt[0],
+                reg_split,
+                reg_split ? (v2_pkt + 1) : v2_pkt,
+                reg_split ? 9u : 10u,
+                port_id,
+                port_set,
+                speed_khz
+            );
             if(rc != 0)
             {
                 return rc;
             }
         }
-        return last_rc;
+        return 0;
     };
 
-    int rc = try_write(active_port_id, active_port_set, active_speed_khz, active_reg_split, 0);
+    auto try_write = [&](uint8_t addr, bool blackwell, uint8_t port_id, uint32_t port_set, uint32_t speed_khz, bool reg_split) -> int
+    {
+        return blackwell
+            ? write_blackwell(addr, port_id, port_set, speed_khz)
+            : write_spectra_v2(addr, port_id, port_set, speed_khz, reg_split);
+    };
+
+    int rc = try_write(active_i2c_addr, use_blackwell_proto, active_port_id, active_port_set, active_speed_khz, active_reg_split);
     if(rc == 0)
     {
         last_nvapi_status = 0;
         last_nvapi_error.clear();
-        FreeLibrary(nvapi);
+        has_applied_color = true;
         return true;
     }
 
-    struct ProbeProfile { uint8_t port; uint32_t port_set; uint32_t speed; bool split; uint32_t ext; };
-    const ProbeProfile profiles[] = {
-        { 1, 1, 4u, true,  0u },
-        { 1, 1, 4u, false, 0u },
-        { 0, 1, 4u, true,  0u },
-        { 0, 1, 4u, false, 0u },
-        { 2, 1, 4u, true,  0u },
-        { 2, 1, 4u, false, 0u },
-        { 0, 0, 4u, true,  0u },
-        { 0, 0, 4u, false, 0u },
-        { 1, 1, 0u, true,  0u },
-        { 0, 1, 0u, true,  0u },
-        { 0, 0, 0u, true,  0u },
-        { 1, 1, 4u, true,  1u },
-        { 0, 1, 4u, true,  1u },
+    int first_err = rc;
+
+    // Probe OpenRGB ZotacBlackwell detect signature (0x4B reg 0x10) across common ports & speeds before heavy writes
+    struct PortSpeed { uint8_t port; uint32_t set; uint32_t speed; };
+    const PortSpeed probes[] = {
+        { 1, 1, 0u }, // Exact OpenRGB i2c_smbus_nvapi setting
+        { 1, 1, 4u },
+        { 0, 1, 0u },
+        { 2, 1, 0u },
+        { 3, 1, 0u },
+        { 0, 0, 0u },
+        { 0, 1, 4u },
+        { 2, 1, 4u },
+        { 0, 0, 4u },
     };
 
-    int first_err = rc;
-    for(const auto& p : profiles)
+    for(const auto& ps : probes)
     {
-        int prc = try_write(p.port, p.port_set, p.speed, p.split, p.ext);
-        if(prc == 0)
+        uint8_t probe_val = 0;
+        if(nv.ReadReg(active_i2c_addr, 0x10, true, &probe_val, 1u, ps.port, ps.set, ps.speed) == 0)
         {
-            active_port_id   = p.port;
-            active_port_set  = p.port_set;
-            active_speed_khz = p.speed;
-            active_reg_split = p.split;
-            last_nvapi_status = 0;
-            last_nvapi_error.clear();
-            FreeLibrary(nvapi);
-            return true;
+            int wrc = try_write(active_i2c_addr, use_blackwell_proto, ps.port, ps.set, ps.speed, true);
+            if(wrc == 0)
+            {
+                active_port_id    = ps.port;
+                active_port_set   = ps.set;
+                active_speed_khz  = ps.speed;
+                active_reg_split  = true;
+                last_nvapi_status = 0;
+                last_nvapi_error.clear();
+                has_applied_color = true;
+                return true;
+            }
+        }
+    }
+
+    if(!use_blackwell_proto)
+    {
+        for(const auto& ps : probes)
+        {
+            for(bool split : { true, false })
+            {
+                int wrc = write_spectra_v2(active_i2c_addr, ps.port, ps.set, ps.speed, split);
+                if(wrc == 0)
+                {
+                    active_port_id    = ps.port;
+                    active_port_set   = ps.set;
+                    active_speed_khz  = ps.speed;
+                    active_reg_split  = split;
+                    last_nvapi_status = 0;
+                    last_nvapi_error.clear();
+                    has_applied_color = true;
+                    return true;
+                }
+            }
         }
     }
 
     last_nvapi_status = first_err;
-    char err_buf[64] = {};
-    if(err_fn != nullptr && err_fn(first_err, err_buf) == 0 && err_buf[0] != '\0')
-    {
-        last_nvapi_error = std::string(err_buf);
-    }
-    else
-    {
-        char code_buf[48] = {};
-        std::snprintf(code_buf, sizeof(code_buf), "NVAPI status %d", first_err);
-        last_nvapi_error = std::string(code_buf);
-    }
-
-    FreeLibrary(nvapi);
+    last_nvapi_error  = nv.FormatError(first_err);
     return false;
 #else
     (void)r; (void)g; (void)b;
@@ -475,133 +620,126 @@ bool OpenRGBZotac5070TiPlugin::WriteColorNVAPI(unsigned char r, unsigned char g,
 std::string OpenRGBZotac5070TiPlugin::ScanNVAPIBus()
 {
 #ifdef _WIN32
-    HMODULE nvapi = LoadLibraryA("nvapi64.dll");
-    if(nvapi == nullptr)
+    NvapiSession& nv = NvapiSession::Get();
+    if(!nv.EnsureReady())
     {
-        return "Could not load nvapi64.dll.";
+        return nv.err_note.empty() ? "NVAPI initialization failed." : nv.err_note;
     }
 
-    using QueryInterfaceFn = void* (__cdecl*)(uint32_t);
-    using NvInitFn         = int (__cdecl*)();
-    using NvEnumGpusFn     = int (__cdecl*)(void**, uint32_t*);
-    using NvGetPciFn       = int (__cdecl*)(void*, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
-    using NvI2CReadExFn    = int (__cdecl*)(void*, NvI2CInfoV3*, uint32_t*);
+    std::string found;
+    int last_rc = -1;
+    bool adopted = false;
 
-    auto query = reinterpret_cast<QueryInterfaceFn>(GetProcAddress(nvapi, "nvapi_QueryInterface"));
-    if(query == nullptr)
+    auto record_hit = [&](const char* label, uint8_t port, uint32_t set, uint32_t speed, uint8_t addr, uint8_t reg, uint8_t val, bool is_bw)
     {
-        FreeLibrary(nvapi);
-        return "nvapi_QueryInterface unavailable.";
-    }
+        char hit[72] = {};
+        std::snprintf(hit, sizeof(hit), "%s@0x%02X[r%02X]=0x%02X(spd%u) ", label, addr, reg, val, speed);
+        found += hit;
 
-    auto init_fn = reinterpret_cast<NvInitFn>(query(0x0150E828u));
-    auto enum_fn = reinterpret_cast<NvEnumGpusFn>(query(0xE5AC921Fu));
-    auto pci_fn  = reinterpret_cast<NvGetPciFn>(query(0x2DDFB66Eu));
-    auto read_fn = reinterpret_cast<NvI2CReadExFn>(query(0x4D7B0709u));
-
-    if(init_fn == nullptr || enum_fn == nullptr || read_fn == nullptr || init_fn() != 0)
-    {
-        FreeLibrary(nvapi);
-        return "NvAPI_I2CReadEx initialization failed.";
-    }
-
-    void*    handles[64] = {};
-    uint32_t count       = 0;
-    if(enum_fn(handles, &count) != 0 || count == 0)
-    {
-        FreeLibrary(nvapi);
-        return "No NVIDIA GPU handles found.";
-    }
-
-    void* target_gpu = handles[0];
-    uint32_t matched_dev = 0, matched_sub = 0;
-    if(pci_fn != nullptr)
-    {
-        for(uint32_t i = 0; i < count; i++)
+        if(!adopted && (addr == 0x4B || addr == ZOTAC_SPECTRA_I2C_ADDR || (addr >= 0x48 && addr <= 0x4F)))
         {
-            uint32_t dev_id = 0, sub_id = 0, rev_id = 0, ext_id = 0;
-            if(pci_fn(handles[i], &dev_id, &sub_id, &rev_id, &ext_id) == 0)
+            active_i2c_addr     = addr;
+            active_port_id      = port;
+            active_port_set     = set;
+            active_speed_khz    = speed;
+            use_blackwell_proto = is_bw || (addr == 0x4B);
+            adopted             = true;
+
+            if(addr == 0x4B)
             {
-                if((dev_id & 0xFFFFu) == NVIDIA_VEN && ((dev_id >> 16) & 0xFFFFu) == NVIDIA_RTX5070TI_DEV)
+                uint8_t fw[33] = {};
+                if(nv.ReadReg(0x4B, 0xF0, true, fw, 32u, port, set, speed) == 0)
                 {
-                    target_gpu = handles[i];
-                    matched_dev = dev_id;
-                    matched_sub = sub_id;
-                    break;
+                    std::string clean;
+                    for(int i = 0; i < 32 && fw[i] != 0x00 && fw[i] != 0xFF; i++)
+                    {
+                        if(fw[i] >= 0x20 && fw[i] <= 0x7E) clean.push_back(static_cast<char>(fw[i]));
+                    }
+                    if(!clean.empty())
+                    {
+                        detected_fw_version = clean;
+                    }
                 }
             }
         }
-    }
-
-    const uint8_t addrs[] = { 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x20, 0x29, 0x60, 0x68, 0x6A, 0x70 };
-    struct PortScan { uint8_t port; uint32_t set; const char* label; };
-    const PortScan ports[] = {
-        { 1, 1, "port1" },
-        { 0, 1, "port0" },
-        { 2, 1, "port2" },
-        { 0, 0, "auto" },
     };
 
-    std::string found;
-    int last_rc = 0;
-    bool adopted = false;
+    struct PortScan { uint8_t port; uint32_t set; const char* label; };
+    const PortScan ports[] = {
+        { 1, 1, "p1" }, // OpenRGB i2c_smbus_nvapi default
+        { 0, 1, "p0" },
+        { 2, 1, "p2" },
+        { 3, 1, "p3" },
+        { 0, 0, "auto" },
+    };
+    const uint32_t speeds[] = { 0u, 4u }; // DEFAULT (0) then 100KHZ (4)
+    const uint8_t  addrs[]  = { 0x4B, 0x49, 0x4A, 0x48, 0x4C, 0x4D, 0x4E, 0x4F, 0x20, 0x29, 0x60, 0x68, 0x6A, 0x70 };
+    const uint8_t  regs[]   = { 0x10, 0xF0, 0x00 };
 
-    for(const auto& p : ports)
+    for(uint32_t spd : speeds)
     {
-        for(uint8_t addr : addrs)
+        for(const auto& p : ports)
         {
-            uint8_t reg = 0x00;
-            uint8_t val = 0x00;
-            NvI2CInfoV3 info {};
-            info.version         = static_cast<uint32_t>(sizeof(NvI2CInfoV3) | (3u << 16));
-            info.displayMask     = 0;
-            info.bIsDDCPort      = 0;
-            info.i2cDevAddress   = static_cast<uint8_t>(addr << 1);
-            info.pbI2cRegAddress = &reg;
-            info.regAddrSize     = 1;
-            info.pbData          = &val;
-            info.cbSize          = 1;
-            info.i2cSpeed        = 0xFFFFu;
-            info.i2cSpeedKhz     = 4u;
-            info.portId          = p.port;
-            info.bIsPortIdSet    = p.set;
-
-            uint32_t ext_data[2] = { 0, 0 };
-            int rc = read_fn(target_gpu, &info, ext_data);
-            if(rc != 0)
+            for(uint8_t addr : addrs)
             {
-                info.pbI2cRegAddress = nullptr;
-                info.regAddrSize     = 0;
-                rc = read_fn(target_gpu, &info, ext_data);
+                for(uint8_t reg : regs)
+                {
+                    uint8_t val = 0;
+                    int rc = nv.ReadReg(addr, reg, true, &val, 1u, p.port, p.set, spd);
+                    last_rc = rc;
+                    if(rc == 0)
+                    {
+                        record_hit(p.label, p.port, p.set, spd, addr, reg, val, (addr == 0x4B || reg == 0x10 || reg == 0xF0));
+                        break;
+                    }
+                }
             }
+        }
+        if(!found.empty()) break;
+    }
+
+    // If nothing matched in quick ZOTAC list, sweep full 7-bit range 0x08..0x77 on port 1 (DEFAULT speed) + check EDID 0x50
+    if(found.empty())
+    {
+        for(uint8_t addr = 0x08; addr <= 0x77; addr++)
+        {
+            uint8_t val = 0;
+            int rc = nv.ReadReg(addr, 0x10, true, &val, 1u, 1, 1, 0u);
+            if(rc != 0) rc = nv.ReadReg(addr, 0x00, true, &val, 1u, 1, 1, 0u);
+            if(rc != 0) rc = nv.ReadReg(addr, 0x00, false, &val, 1u, 1, 1, 0u);
             last_rc = rc;
             if(rc == 0)
             {
-                char hit[48] = {};
-                std::snprintf(hit, sizeof(hit), "%s@0x%02X(0x%02X) ", p.label, addr, val);
-                found += hit;
-                if(!adopted && (addr == ZOTAC_SPECTRA_I2C_ADDR || (addr >= 0x48 && addr <= 0x4B)))
-                {
-                    active_i2c_addr = addr;
-                    active_port_id  = p.port;
-                    active_port_set = p.set;
-                    adopted = true;
-                }
+                record_hit("sweep-p1", 1, 1, 0u, addr, 0x00, val, addr == 0x4B);
             }
         }
     }
 
-    FreeLibrary(nvapi);
+    char header[160] = {};
+    if(!detected_fw_version.empty())
+    {
+        std::snprintf(header, sizeof(header), "PCI=0x%08X Sub=0x%08X FW=%s | ", nv.pci_dev, nv.pci_sub, detected_fw_version.c_str());
+    }
+    else
+    {
+        std::snprintf(header, sizeof(header), "PCI=0x%08X Sub=0x%08X | ", nv.pci_dev, nv.pci_sub);
+    }
 
-    char header[96] = {};
-    std::snprintf(header, sizeof(header), "PCI=0x%08X Sub=0x%08X | ", matched_dev, matched_sub);
     if(!found.empty())
     {
         return std::string(header) + "ACKs: " + found;
     }
 
-    char fail_buf[96] = {};
-    std::snprintf(fail_buf, sizeof(fail_buf), "No ACK on RGB addresses (last NVAPI rc=%d). Exit FireStorm & run as Admin.", last_rc);
+    uint8_t edid_b = 0;
+    int ddc_rc = nv.ReadReg(0x50, 0x00, true, &edid_b, 1u, 1, 1, 0u, 1);
+    char fail_buf[160] = {};
+    std::snprintf(
+        fail_buf,
+        sizeof(fail_buf),
+        "No ACK on 0x4B or 0x08-0x77 (last rc=%d, DDC@0x50 rc=%d). Exit FireStorm/overlays & run OpenRGB as Admin.",
+        last_rc,
+        ddc_rc
+    );
     return std::string(header) + fail_buf;
 #else
     return "NVAPI scan is Windows-only.";
@@ -620,6 +758,10 @@ void OpenRGBZotac5070TiPlugin::SyncFromOpenRGBDevices()
     unsigned char b = last_b;
     if(TryReadFirstOpenRGBColor(api, r, g, b))
     {
+        if(has_applied_color && r == last_r && g == last_g && b == last_b)
+        {
+            return;
+        }
         last_r = r;
         last_g = g;
         last_b = b;
@@ -640,52 +782,36 @@ void OpenRGBZotac5070TiPlugin::ScanAndRegisterZotacGPU()
         return;
     }
 
+    std::string scan_note = ScanNVAPIBus();
     if(WriteColorNVAPI(last_r, last_g, last_b))
     {
         detected = true;
-        char ok_buf[192] = {};
+        char ok_buf[320] = {};
         std::snprintf(
             ok_buf,
             sizeof(ok_buf),
-            "NVAPI Bridge active on 0x%02X (port %u, set=%u, split=%d) for ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC.",
+            "NVAPI Bridge active on 0x%02X (%s, port %u, spd %u). %s",
             active_i2c_addr,
+            use_blackwell_proto ? "Blackwell 0x20-0x2F" : "SPECTRA V2",
             active_port_id,
-            active_port_set,
-            active_reg_split ? 1 : 0
+            active_speed_khz,
+            scan_note.c_str()
         );
         status_line = ok_buf;
     }
     else
     {
-        std::string scan_note = ScanNVAPIBus();
-        if(detected || WriteColorNVAPI(last_r, last_g, last_b))
-        {
-            detected = true;
-            char ok_buf[224] = {};
-            std::snprintf(
-                ok_buf,
-                sizeof(ok_buf),
-                "NVAPI Bridge locked onto 0x%02X (port %u). %s",
-                active_i2c_addr,
-                active_port_id,
-                scan_note.c_str()
-            );
-            status_line = ok_buf;
-        }
-        else
-        {
-            char err_line[256] = {};
-            std::snprintf(
-                err_line,
-                sizeof(err_line),
-                "NVAPI write failed on 0x%02X (%s, rc=%d). %s",
-                active_i2c_addr,
-                last_nvapi_error.c_str(),
-                last_nvapi_status,
-                scan_note.c_str()
-            );
-            status_line = err_line;
-        }
+        char err_line[360] = {};
+        std::snprintf(
+            err_line,
+            sizeof(err_line),
+            "NVAPI write failed on 0x%02X (%s, rc=%d). %s",
+            active_i2c_addr,
+            last_nvapi_error.c_str(),
+            last_nvapi_status,
+            scan_note.c_str()
+        );
+        status_line = err_line;
     }
 }
 
@@ -707,7 +833,7 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
     QHBoxLayout* cfg_row = new QHBoxLayout();
     QLabel* addr_lbl = new QLabel("I2C Addr:");
     QComboBox* addr_box = new QComboBox();
-    const uint8_t addr_choices[] = { 0x49, 0x4A, 0x48, 0x4B, 0x4E, 0x68, 0x6A, 0x29 };
+    const uint8_t addr_choices[] = { 0x4B, 0x49, 0x4A, 0x48, 0x4C, 0x4E, 0x68, 0x6A, 0x29 };
     for(uint8_t a : addr_choices)
     {
         addr_box->addItem(QString("0x%1").arg(a, 2, 16, QChar('0')).toUpper(), static_cast<int>(a));
@@ -720,9 +846,9 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
 
     QLabel* proto_lbl = new QLabel("Protocol:");
     QComboBox* proto_box = new QComboBox();
+    proto_box->addItem("Blackwell MCU (0x20-0x2F)", true);
     proto_box->addItem("SPECTRA V2 (0x0F)", false);
-    proto_box->addItem("Blackwell Block (0xA0)", true);
-    proto_box->setCurrentIndex(use_blackwell_proto ? 1 : 0);
+    proto_box->setCurrentIndex(use_blackwell_proto ? 0 : 1);
 
     QObject::connect(addr_box, QOverload<int>::of(&QComboBox::currentIndexChanged), [this, addr_box, state_label](int idx) {
         if(idx >= 0)
@@ -795,10 +921,11 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
         }
     });
 
-    QObject::connect(rescan_btn, &QPushButton::clicked, [this, state_label, addr_box]() {
+    QObject::connect(rescan_btn, &QPushButton::clicked, [this, state_label, addr_box, proto_box]() {
         ScanAndRegisterZotacGPU();
         int idx = addr_box->findData(static_cast<int>(active_i2c_addr));
         if(idx >= 0) addr_box->setCurrentIndex(idx);
+        proto_box->setCurrentIndex(use_blackwell_proto ? 0 : 1);
         if(mirror_active)
         {
             SyncFromOpenRGBDevices();
@@ -806,10 +933,11 @@ QWidget* OpenRGBZotac5070TiPlugin::GetWidget()
         state_label->setText(QString::fromStdString(status_line));
     });
 
-    QObject::connect(bus_scan_btn, &QPushButton::clicked, [this, state_label, addr_box]() {
+    QObject::connect(bus_scan_btn, &QPushButton::clicked, [this, state_label, addr_box, proto_box]() {
         std::string scan_res = ScanNVAPIBus();
         int idx = addr_box->findData(static_cast<int>(active_i2c_addr));
         if(idx >= 0) addr_box->setCurrentIndex(idx);
+        proto_box->setCurrentIndex(use_blackwell_proto ? 0 : 1);
         state_label->setText(QString::fromStdString(scan_res));
     });
 
