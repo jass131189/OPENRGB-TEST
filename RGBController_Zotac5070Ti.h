@@ -7,14 +7,12 @@
 
 enum
 {
-    ZOTAC_5070TI_MODE_DIRECT           = 0x00,
-    ZOTAC_5070TI_MODE_STATIC           = 0x01,
-    ZOTAC_5070TI_MODE_BREATHING        = 0x02,
-    ZOTAC_5070TI_MODE_COLOR_CYCLE      = 0x03,
-    ZOTAC_5070TI_MODE_RAINBOW          = 0x04,
-    ZOTAC_5070TI_MODE_OFF              = 0x05,
-    ZOTAC_5070TI_MODE_HW_FADE          = 0x06,
-    ZOTAC_5070TI_MODE_SPECTRUM_BREATHE = 0x07
+    ZOTAC_5070TI_MODE_DIRECT      = 0x00,
+    ZOTAC_5070TI_MODE_STATIC      = 0x01,
+    ZOTAC_5070TI_MODE_BREATHING   = 0x02,
+    ZOTAC_5070TI_MODE_COLOR_CYCLE = 0x03,
+    ZOTAC_5070TI_MODE_RAINBOW     = 0x04,
+    ZOTAC_5070TI_MODE_OFF         = 0x05
 };
 
 class Zotac5070TiController
@@ -29,8 +27,6 @@ public:
 private:
     i2c_smbus_interface* bus;
     uint8_t              dev;
-    uint8_t              last_pkt[2][9] = {};
-    bool                 has_last_pkt[2] = { false, false };
 };
 
 class RGBController_Zotac5070Ti : public RGBController

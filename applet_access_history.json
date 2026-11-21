@@ -1,0 +1,15 @@
+{
+  "applets": [{
+    "lastAccessTime": "2026-11-21T12:40:57.742879Z",
+    "firstAccessTime": "2026-11-21T11:42:31.384160Z",
+    "source": {
+      "sourceType": "SPANNER",
+      "spanner": {
+        "id": "4ea220be-5420-4121-8b0e-805c6e257078"
+      }
+    },
+    "name": "ZOTAC SPECTRA OpenRGB Plugin Studio",
+    "description": "Diagnostic studio, 60fps LED smoothness simulator, and C++ OpenRGB 1.1 plugin generator for ZOTAC RTX 5070 Ti SOLID OC.",
+    "runtimeType": 1
+  }]
+}
