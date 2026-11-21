@@ -21,8 +21,14 @@ jobs:
           arch: 'win64_msvc2019_64'
 
       - name: Clone OpenRGB 1.1 source headers
+        shell: pwsh
         run: |
           git clone --depth 1 https://gitlab.com/CalcProgrammer1/OpenRGB.git OpenRGB_src
+          $nlohmannDir = "${{ github.workspace }}/OpenRGB_src/dependencies/nlohmann"
+          if (-not (Test-Path "$nlohmannDir/json.hpp")) {
+            New-Item -ItemType Directory -Force -Path $nlohmannDir | Out-Null
+            Invoke-WebRequest -Uri "https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp" -OutFile "$nlohmannDir/json.hpp"
+          }
 
       - name: Configure & Build DLL
         shell: pwsh
