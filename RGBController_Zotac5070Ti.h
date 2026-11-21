@@ -35,7 +35,7 @@ public:
     explicit RGBController_Zotac5070Ti(Zotac5070TiController* controller_ptr);
     ~RGBController_Zotac5070Ti() override;
 
-    void SetupZones() override;
+    void SetupZones();
     void ResizeZone(int zone, int new_size) override;
     void DeviceUpdateLEDs() override;
     void UpdateZoneLEDs(int zone) override;

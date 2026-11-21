@@ -24,12 +24,12 @@ add_library(OpenRGBZotac5070TiPlugin SHARED
     RGBController_Zotac5070Ti.cpp
     ${OPENRGB_SRC_DIR}/RGBController/RGBController.cpp
     ${OPENRGB_SRC_DIR}/i2c_smbus/i2c_smbus.cpp
-    ${OPENRGB_SRC_DIR}/LogManager.cpp
 )
 
 target_include_directories(OpenRGBZotac5070TiPlugin PRIVATE
     ${OPENRGB_SRC_DIR}
     ${OPENRGB_SRC_DIR}/qt
+    ${OPENRGB_SRC_DIR}/serial_port
     ${OPENRGB_SRC_DIR}/dependencies
     ${OPENRGB_SRC_DIR}/dependencies/json/include
     ${OPENRGB_SRC_DIR}/dependencies/nlohmann

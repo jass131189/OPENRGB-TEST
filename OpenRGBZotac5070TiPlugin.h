@@ -3,7 +3,6 @@
 #include <QObject>
 #include <QWidget>
 #include "OpenRGBPluginInterface.h"
-#include "ResourceManagerInterface.h"
 
 class OpenRGBZotac5070TiPlugin : public QObject, public OpenRGBPluginInterface
 {

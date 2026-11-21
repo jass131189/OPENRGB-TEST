@@ -75,7 +75,7 @@ void OpenRGBZotac5070TiPlugin::ScanAndRegisterZotacGPU()
             unsigned char ping_pkt[2] = { 0x00, 0x00 };
             if(bus->i2c_smbus_write_i2c_block_data(ZOTAC_SPECTRA_I2C_ADDR, 0x00, 2, ping_pkt) < 0)
             {
-                status_line = "Matched PCI ID on bus " + std::string(bus->device_name) + " but I2C 0x49 did not ACK (check if FireStorm is running).";
+                status_line = "Matched PCI ID on I2C bus, but address 0x49 did not ACK (check if FireStorm is running).";
                 continue;
             }
         }
@@ -86,7 +86,7 @@ void OpenRGBZotac5070TiPlugin::ScanAndRegisterZotacGPU()
 
         rm->RegisterRGBController(rgb_controller);
         detected = true;
-        status_line = "Registered ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC on " + std::string(bus->device_name) + " (I2C 0x49).";
+        status_line = "Registered ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC on I2C address 0x49.";
         break;
     }
 

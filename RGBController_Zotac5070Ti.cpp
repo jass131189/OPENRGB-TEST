@@ -10,8 +10,8 @@ Zotac5070TiController::~Zotac5070TiController() = default;
 
 std::string Zotac5070TiController::GetDeviceLocation()
 {
-    char addr_buf[32];
-    std::snprintf(addr_buf, sizeof(addr_buf), "I2C: %s, address 0x%02X", bus->device_name, dev);
+    char addr_buf[48];
+    std::snprintf(addr_buf, sizeof(addr_buf), "I2C: NVAPI/SMBus, address 0x%02X", dev);
     return std::string(addr_buf);
 }
 
@@ -132,7 +132,6 @@ void RGBController_Zotac5070Ti::SetupZones()
     z_side_lightbar.leds_min   = 1;
     z_side_lightbar.leds_max   = 1;
     z_side_lightbar.leds_count = 1;
-    z_side_lightbar.matrix_map = nullptr;
     zones.push_back(z_side_lightbar);
 
     led l_side_lightbar;
@@ -145,7 +144,6 @@ void RGBController_Zotac5070Ti::SetupZones()
     z_spectra_emblem.leds_min   = 1;
     z_spectra_emblem.leds_max   = 1;
     z_spectra_emblem.leds_count = 1;
-    z_spectra_emblem.matrix_map = nullptr;
     zones.push_back(z_spectra_emblem);
 
     led l_spectra_emblem;
