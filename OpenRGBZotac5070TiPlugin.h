@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QMenu>
 #include <QTimer>
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -53,6 +54,7 @@ private:
     void                HandleVirtualUpdate();
     bool                WriteColorNVAPI(unsigned char r, unsigned char g, unsigned char b);
     bool                WriteModeNVAPI(int mode_id, unsigned char r, unsigned char g, unsigned char b, unsigned int speed_pct, bool is_on, bool force_immediate);
+    void                FlushPendingNVAPI();
     std::string         ScanNVAPIBus();
     void                SyncFromOpenRGBDevices();
     void                OnSyncTimerTick();
@@ -63,6 +65,13 @@ private:
     RGBControllerInterface*                        virt_ctrl = nullptr;
     std::mutex                                     nvapi_mutex;
     std::unordered_map<RGBControllerInterface*, uint32_t> tracked_ctrl_colors;
+    std::atomic<bool>                              sw_cycle_active{false};
+    std::atomic<bool>                              mirrored_cycle_active{false};
+    std::atomic<bool>                              virtual_mode_locked{false};
+    std::atomic<unsigned int>                      sw_cycle_speed_pct{50};
+    std::atomic<uint64_t>                          last_virtual_update_ms{0};
+    float                                          sw_cycle_hue = 0.0f;
+    uint64_t                                       last_cycle_step_ms = 0;
     bool                                           detected = false;
     bool                                           mirror_active = true;
     unsigned char                                  last_r = 56;
@@ -71,7 +80,7 @@ private:
     int                                            last_mode_id = 0;
     unsigned int                                   last_speed_pct = 50;
     bool                                           last_is_on = true;
-    uint64_t                                       last_hw_write_ms = 0;
+    std::atomic<uint64_t>                          last_hw_write_ms{0};
     bool                                           pending_hw_flush = false;
     unsigned char                                  pending_r = 56;
     unsigned char                                  pending_g = 189;
