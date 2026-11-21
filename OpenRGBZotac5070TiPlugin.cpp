@@ -52,6 +52,15 @@ namespace
     > : std::true_type {};
 
     template <typename T, typename = void>
+    struct has_get_resource_manager : std::false_type {};
+
+    template <typename T>
+    struct has_get_resource_manager<
+        T,
+        std::void_t<decltype(std::declval<T*>()->GetResourceManager())>
+    > : std::true_type {};
+
+    template <typename T, typename = void>
     struct has_get_rgb_controllers : std::false_type {};
 
     template <typename T>
@@ -113,17 +122,17 @@ namespace
         }
     }
 
-    template <typename ApiT>
-    bool TryNativeRegister(ApiT* plugin_api, std::string& out_status)
+    template <typename ManagerT>
+    bool TryRegisterFromManager(ManagerT* mgr, std::string& out_status)
     {
-        if(plugin_api == nullptr)
+        if(mgr == nullptr)
         {
             return false;
         }
 
-        if constexpr (has_i2c_and_register<ApiT>::value)
+        if constexpr (has_i2c_and_register<ManagerT>::value)
         {
-            auto& busses = plugin_api->GetI2CBusses();
+            auto& busses = mgr->GetI2CBusses();
             for(size_t i = 0; i < busses.size(); i++)
             {
                 i2c_smbus_interface* bus = busses[i];
@@ -147,7 +156,7 @@ namespace
                 RGBController_Zotac5070Ti* rgb_controller = new RGBController_Zotac5070Ti(controller);
                 rgb_controller->name = "ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC";
 
-                plugin_api->RegisterRGBController(rgb_controller);
+                mgr->RegisterRGBController(rgb_controller);
                 out_status = "Registered ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC on native OpenRGB I2C address 0x49.";
                 return true;
             }
@@ -158,6 +167,29 @@ namespace
         }
 
         return false;
+    }
+
+    template <typename ApiT>
+    bool TryNativeRegister(ApiT* plugin_api, std::string& out_status)
+    {
+        if(plugin_api == nullptr)
+        {
+            return false;
+        }
+
+        if constexpr (has_i2c_and_register<ApiT>::value)
+        {
+            return TryRegisterFromManager(plugin_api, out_status);
+        }
+        else if constexpr (has_get_resource_manager<ApiT>::value)
+        {
+            return TryRegisterFromManager(plugin_api->GetResourceManager(), out_status);
+        }
+        else
+        {
+            (void)out_status;
+            return false;
+        }
     }
 
     template <typename CtrlT>

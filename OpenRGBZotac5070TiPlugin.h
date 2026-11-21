@@ -9,7 +9,7 @@
 class OpenRGBZotac5070TiPlugin : public QObject, public OpenRGBPluginInterface
 {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID OpenRGBPluginInterface_IID)
+    Q_PLUGIN_METADATA(IID OpenRGBPluginInterface_IID FILE "OpenRGBZotac5070TiPlugin.json")
     Q_INTERFACES(OpenRGBPluginInterface)
 
 public:

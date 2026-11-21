@@ -17,6 +17,28 @@ endif()
 # Point OPENRGB_SRC_DIR to your local clone of https://gitlab.com/CalcProgrammer1/OpenRGB
 set(OPENRGB_SRC_DIR "${CMAKE_SOURCE_DIR}/../OpenRGB" CACHE PATH "Path to OpenRGB source tree")
 
+# Detect OPENRGB_PLUGIN_API_VERSION from OpenRGBPluginInterface.h so MetaData matches the host build
+set(DETECTED_PLUGIN_API_VERSION 5)
+if(EXISTS "${OPENRGB_SRC_DIR}/OpenRGBPluginInterface/OpenRGBPluginInterface.h")
+    file(READ "${OPENRGB_SRC_DIR}/OpenRGBPluginInterface/OpenRGBPluginInterface.h" _OPENRGB_IFACE_H)
+    if(_OPENRGB_IFACE_H MATCHES "#define[ \t]+OPENRGB_PLUGIN_API_VERSION[ \t]+([0-9]+)")
+        set(DETECTED_PLUGIN_API_VERSION "${CMAKE_MATCH_1}")
+    endif()
+endif()
+
+# Always ensure OpenRGBZotac5070TiPlugin.json exists next to OpenRGBZotac5070TiPlugin.h for moc Q_PLUGIN_METADATA
+file(WRITE "${CMAKE_CURRENT_SOURCE_DIR}/OpenRGBZotac5070TiPlugin.json"
+"{
+    \"OpenRGBPluginAPIVersion\": ${DETECTED_PLUGIN_API_VERSION},
+    \"Id\": \"org.spectrabridge.zotac5070ti\",
+    \"Name\": \"ZOTAC RTX 5070 Ti SPECTRA Bridge\",
+    \"Description\": \"Controls ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC (0x19DA:0x2765) inside OpenRGB 1.1 over NVAPI/I2C.\",
+    \"VersionStr\": \"1.0.0\",
+    \"Commit\": \"1.1\",
+    \"Url\": \"https://gitlab.com/CalcProgrammer1/OpenRGB\"
+}
+")
+
 add_library(OpenRGBZotac5070TiPlugin SHARED
     OpenRGBZotac5070TiPlugin.h
     OpenRGBZotac5070TiPlugin.cpp
@@ -26,7 +48,10 @@ add_library(OpenRGBZotac5070TiPlugin SHARED
     ${OPENRGB_SRC_DIR}/i2c_smbus/i2c_smbus.cpp
 )
 
+target_compile_definitions(OpenRGBZotac5070TiPlugin PRIVATE QT_PLUGIN)
+
 target_include_directories(OpenRGBZotac5070TiPlugin PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${OPENRGB_SRC_DIR}
     ${OPENRGB_SRC_DIR}/qt
     ${OPENRGB_SRC_DIR}/serial_port
