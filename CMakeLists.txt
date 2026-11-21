@@ -36,8 +36,7 @@ file(WRITE "${CMAKE_CURRENT_SOURCE_DIR}/OpenRGBZotac5070TiPlugin.json"
     \"VersionStr\": \"1.0.0\",
     \"Commit\": \"1.1\",
     \"Url\": \"https://gitlab.com/CalcProgrammer1/OpenRGB\"
-}
-")
+}")
 
 add_library(OpenRGBZotac5070TiPlugin SHARED
     OpenRGBZotac5070TiPlugin.h

@@ -12,7 +12,7 @@ Zotac5070TiController::~Zotac5070TiController() = default;
 
 std::string Zotac5070TiController::GetDeviceLocation()
 {
-    char addr_buf[48];
+    char addr_buf[32];
     std::snprintf(addr_buf, sizeof(addr_buf), "I2C: NVAPI/SMBus, address 0x%02X", dev);
     return std::string(addr_buf);
 }
@@ -24,12 +24,12 @@ void Zotac5070TiController::SetZoneColor(
     uint8_t g,
     uint8_t b,
     uint8_t speed,
-    uint8_t brightness
-)
+    uint8_t brightness)
 {
     (void)zone;
     uint8_t mode_4a = 0x00; // Static
     uint8_t is_on   = (mode == ZOTAC_5070TI_MODE_OFF) ? 0x00 : 0x01;
+
     switch(mode)
     {
         case ZOTAC_5070TI_MODE_BREATHING:   mode_4a = 0x01; break;
@@ -37,14 +37,17 @@ void Zotac5070TiController::SetZoneColor(
         case ZOTAC_5070TI_MODE_RAINBOW:     mode_4a = 0x04; break;
         default:                            mode_4a = 0x00; break;
     }
+
     uint8_t spd_byte = static_cast<uint8_t>((speed * 0xFE) / 10);
     uint8_t on_time  = (mode_4a == 0x00) ? 45 : static_cast<uint8_t>(0xFE - spd_byte);
+
     uint8_t data_pkt[32] =
     {
         0x00, is_on, mode_4a, r, g, b, on_time, 10, 0x08
     };
+
     bus->i2c_smbus_write_i2c_block_data(dev, 0x5A, sizeof(data_pkt), data_pkt);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
 }
 
 RGBController_Zotac5070Ti::RGBController_Zotac5070Ti(Zotac5070TiController* controller_ptr)
@@ -178,7 +181,6 @@ void RGBController_Zotac5070Ti::UpdateZoneLEDs(int zone)
     {
         return;
     }
-
     RGBColor color      = colors[zone];
     uint8_t  r          = RGBGetRValue(color);
     uint8_t  g          = RGBGetGValue(color);
@@ -186,7 +188,6 @@ void RGBController_Zotac5070Ti::UpdateZoneLEDs(int zone)
     uint8_t  mode_val   = static_cast<uint8_t>(modes[active_mode].value);
     uint8_t  speed      = static_cast<uint8_t>(modes[active_mode].speed);
     uint8_t  brightness = static_cast<uint8_t>(modes[active_mode].brightness);
-
     controller->SetZoneColor(static_cast<uint8_t>(zone), mode_val, r, g, b, speed, brightness);
 }
 
