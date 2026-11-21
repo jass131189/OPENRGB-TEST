@@ -32,8 +32,8 @@ file(WRITE "${CMAKE_CURRENT_SOURCE_DIR}/OpenRGBZotac5070TiPlugin.json"
     \"OpenRGBPluginAPIVersion\": ${DETECTED_PLUGIN_API_VERSION},
     \"Id\": \"org.spectrabridge.zotac5070ti\",
     \"Name\": \"ZOTAC RTX 5070 Ti SPECTRA Bridge\",
-    \"Description\": \"Smooth-Engine NVAPI/I2C Bridge for ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC (0x19DA:0x2765).\",
-    \"VersionStr\": \"2.1.0\",
+    \"Description\": \"Smooth Main-Thread NVAPI/I2C Bridge for ZOTAC GAMING GeForce RTX 5070 Ti SOLID OC (0x19DA:0x2765).\",
+    \"VersionStr\": \"2.2.0\",
     \"Commit\": \"1.1\",
     \"Url\": \"https://gitlab.com/CalcProgrammer1/OpenRGB\"
 }")

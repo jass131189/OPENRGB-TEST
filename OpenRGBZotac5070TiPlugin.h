@@ -5,12 +5,11 @@
 #include <QMenu>
 #include <QTimer>
 #include <QLabel>
+#include <QCheckBox>
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include "OpenRGBPluginInterface.h"
 
@@ -52,20 +51,20 @@ private:
     static void         OnVirtualUpdateSingleLED(void* ptr, int led);
     static void         OnVirtualUpdateMode(void* ptr);
 
-    void                StartWorkerThread();
-    void                StopWorkerThread();
-    void                WorkerLoop();
-
+    void                ScheduleVirtualUpdate();
     void                ScanAndRegisterZotacGPU();
     void                RegisterVirtualGPUDevice();
     void                HandleVirtualUpdate();
-    void                SubmitTargetState(int mode_id, unsigned char r, unsigned char g, unsigned char b, unsigned int speed_pct, bool is_on, bool immediate_snap);
-    void                SetCycleFlags(bool sw_cycle, bool mirror_cycle);
-    bool                WriteHardwareNVAPI(int mode_id, unsigned char r, unsigned char g, unsigned char b, unsigned int speed_pct, bool is_on, uint32_t& out_write_us);
+    void                SetSmoothTargetColor(unsigned char r, unsigned char g, unsigned char b);
+    bool                CanWriteHardwareNow(uint64_t now_ms) const;
+    bool                WriteColorNVAPI(unsigned char r, unsigned char g, unsigned char b);
+    bool                WriteModeNVAPI(int mode_id, unsigned char r, unsigned char g, unsigned char b, unsigned int speed_pct, bool is_on, bool force_immediate);
+    void                FlushPendingNVAPI();
     uint32_t            NegotiateSafeBusSpeed();
     std::string         BenchmarkBusSpeed();
     std::string         ScanNVAPIBus();
     void                SyncFromOpenRGBDevices();
+    void                SyncVirtualPreview(unsigned char r, unsigned char g, unsigned char b);
     void                OnSyncTimerTick();
     void                UpdateTelemetryUI();
 
@@ -73,55 +72,66 @@ private:
     QWidget*                                              widget = nullptr;
     QLabel*                                               state_label = nullptr;
     QLabel*                                               telemetry_label = nullptr;
+    QCheckBox*                                            mirror_chk = nullptr;
     QTimer*                                               sync_timer = nullptr;
     RGBControllerInterface*                               virt_ctrl = nullptr;
 
-    // Thread synchronization: target_mutex protects ALL condition_variable predicates & target state
     std::mutex                                            nvapi_mutex;
-    std::mutex                                            target_mutex;
-    std::condition_variable                               worker_cv;
-    std::thread                                           worker_thread;
-    std::atomic<bool>                                     worker_stop{false};
-
     std::unordered_map<RGBControllerInterface*, uint32_t> tracked_ctrl_colors;
+
     std::atomic<bool>                                     sw_cycle_active{false};
     std::atomic<bool>                                     mirrored_cycle_active{false};
     std::atomic<bool>                                     virtual_mode_locked{false};
     std::atomic<unsigned int>                             sw_cycle_speed_pct{50};
     std::atomic<uint64_t>                                 last_virtual_update_ms{0};
+    std::atomic<bool>                                     virtual_update_queued{false};
+    std::atomic<bool>                                     sync_update_queued{false};
 
-    // Smooth Engine v2.1 configuration (tunable live in Plugin UI & saved in OpenRGB profile)
+    // Smooth Engine v2.2.0 configuration (runs safely on Qt main thread where NVAPI initialized)
     std::atomic<uint32_t>                                 target_frame_ms{40};
     std::atomic<uint32_t>                                 smooth_window_ms{120};
     std::atomic<int>                                      i2c_speed_pref{0}; // 0=Auto Safe, 4=100kHz, 3=40kHz, 2=10kHz
     std::atomic<bool>                                     gamma_correction{true};
     std::atomic<bool>                                     prefer_hw_native_cycle{false};
 
-    // Target state written under target_mutex and consumed by WorkerLoop
-    unsigned char                                         target_r = 56;
-    unsigned char                                         target_g = 189;
-    unsigned char                                         target_b = 248;
-    int                                                   target_mode_id = 0;
-    unsigned int                                          target_speed_pct = 50;
-    bool                                                  target_is_on = true;
-    bool                                                  target_dirty = true;
-    bool                                                  target_snap = true;
-
-    // Live telemetry published atomically by WorkerLoop for Qt UI
-    std::atomic<uint32_t>                                 displayed_rgb_packed{(56u << 16) | (189u << 8) | 248u};
-    std::atomic<uint32_t>                                 measured_write_us{0};
-    std::atomic<uint32_t>                                 measured_fps_x10{0};
-    std::atomic<uint64_t>                                 frames_sent{0};
-    std::atomic<uint64_t>                                 frames_failed{0};
-    std::atomic<int>                                      worker_last_rc{0};
-    uint64_t                                              last_ui_telemetry_ms = 0;
+    // Smooth interpolator & cycle state (Qt main thread)
+    float                                                 sw_cycle_hue = 0.0f;
+    uint64_t                                              last_tick_ms = 0;
+    bool                                                  interp_active = false;
+    float                                                 cur_lin[3] = { 0.0f, 0.0f, 0.0f };
+    bool                                                  cur_lin_init = false;
+    unsigned char                                         interp_target_r = 56;
+    unsigned char                                         interp_target_g = 189;
+    unsigned char                                         interp_target_b = 248;
+    bool                                                  updating_virtual_preview = false;
+    bool                                                  in_timer_tick = false;
 
     bool                                                  detected = false;
     bool                                                  mirror_active = true;
     unsigned char                                         last_r = 56;
     unsigned char                                         last_g = 189;
     unsigned char                                         last_b = 248;
-    uint32_t                                              last_qt_preview_rgb = 0;
+    int                                                   last_mode_id = 0;
+    unsigned int                                          last_speed_pct = 50;
+    bool                                                  last_is_on = true;
+
+    uint64_t                                              last_write_start_ms = 0;
+    uint64_t                                              last_write_end_ms = 0;
+    uint32_t                                              last_write_us = 0;
+    uint32_t                                              measured_fps_x10 = 0;
+    uint64_t                                              fps_window_start_ms = 0;
+    uint32_t                                              fps_window_frames = 0;
+    uint64_t                                              frames_sent = 0;
+    uint64_t                                              frames_failed = 0;
+    uint64_t                                              last_ui_telemetry_ms = 0;
+
+    bool                                                  pending_hw_flush = false;
+    unsigned char                                         pending_r = 56;
+    unsigned char                                         pending_g = 189;
+    unsigned char                                         pending_b = 248;
+    int                                                   pending_mode_id = 0;
+    unsigned int                                          pending_speed_pct = 50;
+    bool                                                  pending_is_on = true;
 
     uint8_t                                               active_i2c_addr = 0x4A;
     uint32_t                                              active_display_mask = 1u;

@@ -61,7 +61,7 @@ void Zotac5070TiController::SetZoneColor(
     bus->i2c_smbus_write_i2c_block_data(dev, 0x5A, sizeof(data_pkt), data_pkt);
     std::memcpy(last_pkt[z_idx], data_pkt, 9);
     has_last_pkt[z_idx] = true;
-    std::this_thread::sleep_for(std::chrono::milliseconds(12));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
 }
 
 RGBController_Zotac5070Ti::RGBController_Zotac5070Ti(Zotac5070TiController* controller_ptr)
